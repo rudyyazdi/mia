@@ -973,16 +973,6 @@ const workerCall = (
     .with({ kind: "ask" }, () => {
       const approvalId = draft.id("appr");
       const requested = draft.id("evt");
-      draft.write({
-        kind: "create_approval",
-        input: {
-          id: approvalId,
-          requestedAt: draft.at,
-          toolCallId: callId,
-          executionEpoch: task.epoch,
-          requestingEventId: requested,
-        },
-      });
       draft.emit(
         {
           type: "approval_requested",
@@ -1003,6 +993,17 @@ const workerCall = (
         },
         { ...workerLinks(task), id: requested, causedBy: proposed },
       );
+      // After approval_requested, whose event the approval names as the one that asked for it.
+      draft.write({
+        kind: "create_approval",
+        input: {
+          id: approvalId,
+          requestedAt: draft.at,
+          toolCallId: callId,
+          executionEpoch: task.epoch,
+          requestingEventId: requested,
+        },
+      });
       draft.changeCall(task.id, callId, { status: "awaiting_approval" });
       draft.advanceTask(task.id, (next) => ({
         ...next,

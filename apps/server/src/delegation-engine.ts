@@ -387,7 +387,11 @@ export class DelegationEngine {
     } finally {
       this.asking = previous;
     }
-    if (dispatched.kind !== "committed") return NOT_RECORDED;
+    if (dispatched.kind === "failed") {
+      this.deps.log(`gate request not recorded: ${errorMessage(dispatched.error)}`);
+      return NOT_RECORDED;
+    }
+    if (dispatched.kind === "rejected") return NO_CONVERSATION;
     return asking.answer ?? NOT_RECORDED;
   }
 

@@ -158,13 +158,13 @@ export class ScriptedSession {
     });
   }
 
-  toolResult(runtimeCallId: string, workerTaskId: string, content: unknown, isError = false) {
+  toolResult(result: { runtimeCallId: string; workerTaskId: string; content: unknown }) {
     return this.emit({
       type: "tool_result",
-      runtimeCallId,
-      parentCallId: `toolu_delegate_${workerTaskId}`,
-      isError,
-      content,
+      runtimeCallId: result.runtimeCallId,
+      parentCallId: `toolu_delegate_${result.workerTaskId}`,
+      isError: false,
+      content: result.content,
       raw: null,
       at: at(),
     });

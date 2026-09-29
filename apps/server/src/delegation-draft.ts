@@ -101,19 +101,6 @@ export class DelegationDraft extends Draft<DelegationState, DelegationEffect> {
       decisionClientId?: string;
     },
   ): void {
-    this.write({
-      kind: "update_approval",
-      id: resolved.approvalId,
-      fields: {
-        status: resolved.status,
-        consumedAt: this.at,
-        decisionEventId: resolved.eventId,
-        ...(resolved.reason === undefined ? {} : { reason: resolved.reason }),
-        ...(resolved.decisionClientId === undefined
-          ? {}
-          : { decisionClientId: resolved.decisionClientId }),
-      },
-    });
     this.emit(
       {
         type: "approval_resolved",
@@ -128,6 +115,20 @@ export class DelegationDraft extends Draft<DelegationState, DelegationEffect> {
       },
       { ...workerLinks(task), id: resolved.eventId },
     );
+    // After approval_resolved, whose event the approval names as its decision's.
+    this.write({
+      kind: "update_approval",
+      id: resolved.approvalId,
+      fields: {
+        status: resolved.status,
+        consumedAt: this.at,
+        decisionEventId: resolved.eventId,
+        ...(resolved.reason === undefined ? {} : { reason: resolved.reason }),
+        ...(resolved.decisionClientId === undefined
+          ? {}
+          : { decisionClientId: resolved.decisionClientId }),
+      },
+    });
   }
 
   /** Record a lease release of exclusive tool `toolIdentity`, if one is held, and drop it from the draft. */

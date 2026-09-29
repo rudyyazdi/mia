@@ -8,7 +8,7 @@ A minimal text client sends tasks through a persistent server to the configured 
 
 One active client, conversation, and task. Follow-ups reuse agent context; additional clients or overlapping tasks receive a busy response. Client and server are separate processes from the first slice.
 
-Exclude voice, product visuals, handoff, notifications, conversation switching/recall, additional runtimes, workers, escalation, jobs, and full reconnect/restart recovery. Include read-only conversation debugging/export and document future storage compatibility. Comprehensive inherited-tool isolation is deferred; unsupported configured-tool enforcement still blocks configuration.
+Exclude voice, product visuals, handoff, notifications, conversation switching/recall, additional runtimes, worker agents, escalation, jobs, and full reconnect/restart recovery. Include read-only conversation debugging/export and document future storage compatibility. Comprehensive inherited-tool isolation is deferred; unsupported configured-tool enforcement still blocks configuration.
 
 ## Work to do before building the slice
 
@@ -76,29 +76,26 @@ flowchart TB
     store[("Private records<br/>Data store")]
     subgraph server["Mia server — container"]
         gateway["Client gateway<br/>Component<br/>Authentication, validation, command deduplication"]
-        coordinator["Conversation/task coordinator<br/>Component<br/>Single ownership, task states, event ordering"]
-        control["Approval and interruption controller<br/>Component<br/>Exact-call decisions and action gate"]
+        engine["Engine<br/>Component<br/>Single ownership, task states, event ordering, exact-call decisions and action gate"]
         adapter["Claude Code adapter<br/>Component<br/>Capabilities, event mapping and runtime control"]
         records["Record writer<br/>Component<br/>Events, redaction, snapshots and diagnostics"]
     end
     client <-->|"Commands, events, heartbeat"| gateway
-    gateway <-->|"Validated commands and task events"| coordinator
-    coordinator <-->|"Execution state and user decisions"| control
-    coordinator <-->|"Start turn, text deltas, terminal outcome"| adapter
-    control <-->|"Held calls, bound decisions, gate and cancel"| adapter
+    gateway <-->|"Validated commands and task events"| engine
+    engine <-->|"Start turn, text deltas, terminal outcome"| adapter
+    engine <-->|"Held calls, bound decisions, gate and cancel"| adapter
     adapter <-->|"Structured protocol"| runtime
     gateway -->|"Client diagnostics"| records
-    coordinator -->|"Task and conversation events"| records
-    control -->|"Durable approval and interruption records"| records
+    engine -->|"Task and conversation events, durable approval and interruption records"| records
     adapter -->|"Redacted runtime evidence"| records
     records -->|"Transactional writes and immutable snapshots"| store
 ```
 
-The controller owns policy/state; the adapter enforces them through proven runtime hooks or tool boundaries. Post-execution notification is not approval enforcement; storage is not consent. The debug CLI shares `packages/records` read-only queries/export, works offline, and cannot invoke agents.
+The engine owns policy/state; the adapter enforces them through proven runtime hooks or tool boundaries. Post-execution notification is not approval enforcement; storage is not consent. The debug CLI shares `packages/records` read-only queries/export, works offline, and cannot invoke agents.
 
 ## Sequence diagrams
 
-Required behavior, not verified protocol methods. Probe held-call and action-gate support. Server combines the C4 gateway, coordinator, and controller.
+Required behavior, not verified protocol methods. Probe held-call and action-gate support. Server combines the C4 gateway and engine.
 
 ### Text task and policy-driven tool execution
 
@@ -165,7 +162,7 @@ sequenceDiagram
     participant Adapter as Claude Code adapter
     participant Claude as Claude Code
 
-    Note over Server,Claude: A task is running; a call may be pending or already dispatched
+    Note over Server,Claude: A task is running, and a call may be pending or already dispatched
     User->>Client: Interrupt task
     Client->>Server: interrupt_task
     critical Serialized with exact-call release
@@ -177,16 +174,16 @@ sequenceDiagram
     Adapter->>Claude: Request supported cancellation
     opt Approval arrives after interruption won the race
         Client->>Server: approval_decision for old epoch
-        Server-->>Client: Approval invalidated; no call released
+        Server-->>Client: Approval invalidated, no call released
     end
     opt Runtime proposes another consequential action
         Claude->>Adapter: Proposed call at enforceable boundary
         Adapter->>Server: Request dispatch permission
-        Server-->>Adapter: Block; action gate closed
+        Server-->>Adapter: Block, action gate closed
         Adapter-->>Claude: Deny dispatch
     end
     alt No call was released before gate closure
-        Adapter-->>Server: Cancellation outcome; no tool action in flight
+        Adapter-->>Server: Cancellation outcome, no tool action in flight
     else Call was already released and cancellation is confirmed
         Claude-->>Adapter: Evidence of action cancellation
         Adapter-->>Server: Action cancelled
@@ -197,7 +194,7 @@ sequenceDiagram
     Server->>Records: Persist observed outcome, or uncertainty after bounded timeout
     Server-->>Client: interruption_outcome with actual action status
     Client-->>User: Show what stopped and what did not
-    Note over Server,Claude: No automatic retry or gate reopening; unknown outcomes are reported to the model on its next turn
+    Note over Server,Claude: No automatic retry or gate reopening. Unknown outcomes are reported to the model on its next turn
 ```
 
 If release wins the race, the call is in flight and must be reported as such. Cancellation acknowledgement alone is not evidence that the tool's external effect stopped. These orderings become deterministic acceptance tests using the fixture's synchronization barriers.
@@ -232,7 +229,7 @@ An approval is single use. Another call, changed arguments, an expired execution
 
 Task states: `running`, `awaiting_approval`, `interrupting`, then `completed`, `failed`, `interrupted`, or `outcome_unknown`. Keep action outcomes separate from task state: an interrupted task may contain an action that completed.
 
-On interruption, atomically close the gate for new consequential actions and advance the execution epoch before requesting runtime cancellation. Invalidate unresolved approvals from the previous epoch. Serialize approval release and interruption through the same controller so their race has a recorded order: a released action is already in flight; an interruption that wins prevents release.
+On interruption, atomically close the gate for new consequential actions and advance the execution epoch before requesting runtime cancellation. Invalidate unresolved approvals from the previous epoch. Serialize approval release and interruption through the engine so their race has a recorded order: a released action is already in flight; an interruption that wins prevents release.
 
 Record and show which in-flight actions were cancelled, completed, remain running, or have unknown outcomes. Sending a cancel request or killing a CLI process does not prove an external action stopped. Keep the task interrupting while an outcome is being resolved; on a bounded timeout report uncertainty and do not automatically retry. Require a new explicit user turn before opening a new execution epoch. Unknown outcomes are not enforced by the harness beyond that: the next turn carries a Mia-authored note listing them, and the configured per-tool policy applies unchanged (an `allow` tool stays `allow`); whether repeating an action could double an effect is the model's judgement, informed by that note.
 

@@ -7,7 +7,7 @@ Implemented: fixture in `fixtures/controlled-mcp`, H lane in `tests/acceptance/s
 1. Use installed Claude Code and existing authentication. Record version; pin the exact Opus identifier. Use the effort setting in the plan.
 2. Create a private disposable working/state directory. Start the server, client, fixture, and approval bridge. Fresh conversation and ledger per case unless testing follow-up/reuse.
 3. Fixture exposes only the tools below. Effects stay in its directory. Ledger records `entered`, `committed`, `cancelled`, and `returned`, with call IDs and arguments. Count commits, not model claims.
-4. Harness controls barriers through a private channel unavailable to the agent. No sleeps. The uncancellable worker survives runtime disconnection until the harness releases it.
+4. Harness controls barriers through a private channel unavailable to the agent. No sleeps. The uncancellable action survives runtime disconnection until the harness releases it.
 
 | Fixture tool | Input | Behavior |
 | --- | --- | --- |
@@ -101,7 +101,7 @@ Each case's prompt, trigger and required result belong to the lane that runs it,
 Lane rules, which no test can state for itself:
 
 - Hidden-tool refusal alone does not prove proposal enforcement; inject the proposal through the adapter checks as well.
-- For approval races, inject both orderings at controller barriers. For live cancellation, observe the independent fixture ledger.
+- For approval races, inject both orderings at engine barriers. For live cancellation, observe the independent fixture ledger.
 - A substitute pass never establishes runtime support, and an absent live proposal after gate closure leaves live gate coverage unproven, not passed.
 
 ## Pass record

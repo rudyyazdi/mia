@@ -17,7 +17,12 @@ export { loadProfileSync, ProfileSchema } from "./profile.ts";
 export type { Profile } from "./profile.ts";
 export { ApprovalBridge } from "./bridge.ts";
 export type { PermissionDecision, PermissionHandler, PermissionRequest } from "./bridge.ts";
-export { prepareLaunch } from "./launch.ts";
+export { MANAGER_TOOLS, prepareLaunch, prepareSession, WORKER_AGENT_NAME } from "./launch.ts";
+export type { SessionPlan, WorkerAgentDefinition } from "./launch.ts";
+export { MAX_GATE_PAYLOAD_BYTES, ToolGate } from "./gate.ts";
+export type { GateDecision, GateHandler, GateRequest } from "./gate.ts";
+export { ClaudeCodeSessions } from "./session.ts";
+export type { SessionHandle, SessionOptions, SessionResult } from "./session.ts";
 export {
   ADAPTER_VERSION,
   ClaudeCodeAdapter,
@@ -36,6 +41,12 @@ export type {
   TurnOptions,
   TurnResult,
 } from "./adapter.ts";
-export type { RuntimeEvent, RuntimeInit, TurnSummary } from "./runtime-events.ts";
+export type {
+  RuntimeEvent,
+  RuntimeInit,
+  SessionEvent,
+  TaskEvent,
+  TurnSummary,
+} from "./runtime-events.ts";
 export { LiveCallBudget } from "./budget.ts";
 export { untilAborted } from "./deadline.ts";

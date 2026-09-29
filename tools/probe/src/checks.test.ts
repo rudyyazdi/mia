@@ -53,10 +53,11 @@ describe("probe evidence readings", () => {
   it("orders streamed text before the result and counts exactly one commit", () => {
     const record = step({
       events: [
-        { type: "text_delta", text: "hi", at },
+        { type: "text_delta", text: "hi", parentCallId: null, at },
         {
           type: "tool_proposed",
           runtimeCallId: "toolu_1",
+          parentCallId: null,
           toolIdentity: "mcp__d1__read",
           arguments: {},
           complete: true,

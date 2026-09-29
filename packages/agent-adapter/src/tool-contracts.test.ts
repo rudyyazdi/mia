@@ -15,6 +15,8 @@ const runtime = (mcpServers: RuntimeConfig["mcpServers"]): RuntimeConfig => ({
   outputDirectories: [],
   env: {},
   extraSettings: {},
+  workerAgent: null,
+  exclusiveTools: [],
 });
 
 type McpServer = RuntimeConfig["mcpServers"][string];

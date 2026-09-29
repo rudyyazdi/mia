@@ -202,11 +202,15 @@ const NO_SYNC_IO = {
 };
 
 // The workspaces that serve: the server, the libraries it runs, and the text client. Left out are one-shot
-// processes (the debug CLI, the runtime's hook script) and code whose only client is a runtime it spawned
+// processes (the debug CLI, the runtime's hook scripts) and code whose only client is a runtime it spawned
 // itself (the probe, tests and their fixtures), where a stall holds up nobody else.
 const SERVING_WORKSPACES = ["packages", "apps/server", "apps/text-client"];
 const SERVING_FILES = SERVING_WORKSPACES.map((workspace) => `${workspace}/**/*.{ts,js,mjs}`);
-const NOT_SERVING_FILES = ["**/*.test.ts", "packages/agent-adapter/src/hook-capture.mjs"];
+const NOT_SERVING_FILES = [
+  "**/*.test.ts",
+  "packages/agent-adapter/src/hook-capture.mjs",
+  "packages/agent-adapter/src/gate-hook.mjs",
+];
 
 // Enforces AGENTS.md, Node: only the file a process starts from reads the environment, installs
 // signal handlers or exits; every other module takes what it needs as an argument.
@@ -232,12 +236,13 @@ const PROCESS_ENTRY_ONLY = [
   },
 ];
 
-// The files a process starts from other than a main.ts: the runtime's hook script and the promptfoo
+// The files a process starts from other than a main.ts: the runtime's hook scripts and the promptfoo
 // provider plugin. The override below turns no-restricted-properties off for them, which only
 // carries PROCESS_ENTRY_ONLY.
 const PROCESS_ENTRY_FILES = [
   "**/main.ts",
   "packages/agent-adapter/src/hook-capture.mjs",
+  "packages/agent-adapter/src/gate-hook.mjs",
   "tests/acceptance/promptfoo/provider.ts",
 ];
 

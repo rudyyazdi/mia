@@ -68,7 +68,7 @@ export class ScriptedTurn {
   }
 
   text(text: string): void {
-    this.report({ type: "text_delta", text, at: new Date().toISOString() });
+    this.report({ type: "text_delta", text, parentCallId: null, at: new Date().toISOString() });
   }
 
   init(model = "scripted-model"): void {
@@ -83,6 +83,7 @@ export class ScriptedTurn {
     this.report({
       type: "tool_proposed",
       runtimeCallId,
+      parentCallId: null,
       toolIdentity,
       arguments: args,
       complete: true,
@@ -140,6 +141,7 @@ export class ScriptedTurn {
     return this.emit({
       type: "tool_result",
       runtimeCallId,
+      parentCallId: null,
       isError,
       content,
       raw: null,

@@ -56,3 +56,30 @@ Status: **go**. Every behaviour the adapter relies on was demonstrated against t
 ## Decision
 
 Go for work items 2–6 with the adapter as specified above. Any change of runtime version invalidates rows 3, 7, 9, 10 and F1–F4 until the probe (`npm run probe`) is rerun.
+
+## D2 addendum: worker agents (2026-09-29, issue #200)
+
+Status: **go**, with a different gate than D1's. Claude Code `2.1.283`, `claude-sonnet-5`, `--effort medium`. Evidence: `.mia-state/probe/2026-09-29T12-19-47-188Z/` (sessions `worker-gate`, `worker-interrupt`, `worker-background`, `worker-stop`), and `2026-09-29T12-03-00-433Z/` for W1. Run with `npm run probe -- --only worker-gate,worker-interrupt,worker-background,worker-stop`.
+
+| Item | Value |
+| --- | --- |
+| Session | One process per manager agent's session: `claude -p --input-format stream-json --output-format stream-json`; each user message is one stdin line; the runtime writes one `result` per manager turn and stays up until stdin closes |
+| Worker agent | `--agents` defines `mia-worker` with the policy's tools and neither manager tool; `--tools Task,TaskStop` gives the manager agent delegation (it streams as `Agent`) and `TaskStop` |
+| Gate | A Mia `PreToolUse` command hook (`gate-hook.mjs`, timeout 24 h) posts every call to Mia and prints Mia's decision; settings keep only `permissions.deny`, so no call reaches the runtime's prompt |
+| Attribution | The hook input carries `agent_id` and `agent_type` for a worker agent's call and neither for the manager agent's; `agent_id` equals the `task_id` of the runtime's `task_started`/`task_notification` system messages, and the stream carries `parent_tool_use_id` (the delegation call) on the call's `tool_use` before the hook runs |
+
+| # | Check (issue #200) | Result |
+| --- | --- | --- |
+| 1 | A worker agent's call reaches Mia, and a reject stops it | pass: `worker-gate`, `change` reached the gate and no commit |
+| 2 | `ask` and `deny` policy hold inside a worker agent | pass: `read` allowed ran; `forbidden` (deny) never reached the gate and never ran; the manager agent made no fixture call |
+| 3 | Interruption stops a held worker agent's call | pass: `worker-interrupt`, SIGKILL while `change` was held; the hook saw its runtime gone, the held call was abandoned, nothing ran |
+| 4 | Each call is attributed to its worker agent | pass: every fixture call's `agent_id` names a started worker agent, and its stream proposal's `parent_tool_use_id` is that worker agent's delegation call |
+| 5 | A background worker agent keeps running after the manager agent's turn ends | pass: `worker-background`, the manager turn's `result` arrived and a second message was answered while the worker agent's call was held; the worker agent's end started a third turn that reported it |
+
+**W1: a background worker agent never reaches `--permission-prompt-tool`.** With D1's settings (`permissions.ask` for every configured tool), a background worker agent's `slow` call was denied by the runtime itself ("Permission to use mcp__d1__slow has been denied") and the approval bridge was never called. That is safe (nothing ran unapproved) but makes every background call fail, so D2 gates through the hook instead. A hook's `allow` did not override an `ask` rule for a background worker agent either, which is why the session's settings have no `ask` rules.
+
+**W2: hooks outlive the runtime.** Claude Code starts each hook in a process group of its own, so killing the runtime's group left a hook waiting on its held call. The hook now exits when it is re-parented, which closes its request and lets Mia see the call abandoned (check 3).
+
+**W3: `TaskStop` does not cancel an in-flight call.** In `worker-stop` the runtime reported the worker agent `stopped` while its cancellable `slow` call stayed in flight at the fixture; the fixture recorded it cancelled only when the session ended. Mia therefore records a stopped worker agent's dispatched call as in flight, never as cancelled, until its outcome is observed.
+
+**W4: turn boundaries.** Each manager turn starts with a fresh `system/init` message and ends with one `result`. A worker agent's end arrives as `task_notification` before the `init` of the turn it starts.

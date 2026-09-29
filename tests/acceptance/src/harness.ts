@@ -145,6 +145,8 @@ export const testProfile = (
       outputDirectories: [join(dir, "outputs")],
       env: {},
       extraSettings: {},
+      workerAgent: null,
+      exclusiveTools: [],
       ...overrides,
     },
     architectureDocument: resolve(REPO_ROOT, "docs/D1/PLAN.md"),

@@ -1,20 +1,34 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { match } from "ts-pattern";
 import {
   ApprovalBridge,
   ClaudeCodeAdapter,
+  ClaudeCodeSessions,
+  ToolGate,
+  untilAborted,
   LiveCallBudget,
   hookEvidenceFrom,
   readRuntimeFile,
   validateRuntimeConfig,
+  type GateDecision,
+  type GateRequest,
   type RuntimeEvent,
   type PermissionHandler,
   type RuntimeConfig,
 } from "@mia/agent-adapter";
 import { FixtureHarness, startFixture } from "@mia/controlled-mcp";
 import { redactValue } from "@mia/protocol";
-import type { ProbeDeadlines, ProbeOptions, StepRecord, StepSpec } from "./record.ts";
+import type {
+  ProbeDeadlines,
+  ProbeOptions,
+  SessionRecord,
+  SessionSpec,
+  StepRecord,
+  StepSpec,
+} from "./record.ts";
 
 export const log = (...args: unknown[]) => console.log(`[probe]`, ...args);
 
@@ -33,6 +47,8 @@ const describeEvent = (event: RuntimeEvent): string =>
  */
 export class ProbeContext {
   readonly records: StepRecord[] = [];
+  /** Woken after each event the running step records; see `waitForEvent`. */
+  private readonly eventWaiters = new Set<() => void>();
 
   private constructor(
     readonly options: ProbeOptions,
@@ -42,6 +58,7 @@ export class ProbeContext {
       fixture: Awaited<ReturnType<typeof startFixture>>;
       harness: FixtureHarness;
       bridge: ApprovalBridge;
+      gate: ToolGate;
       deadlines: ProbeDeadlines;
       env: NodeJS.ProcessEnv;
     },
@@ -62,16 +79,19 @@ export class ProbeContext {
     const fixture = await startFixture({ dir: fixtureDir, mcpLogFile: env.MIA_MCP_HTTP_LOG });
     const harness = new FixtureHarness(fixture.harnessUrl);
     const bridge = new ApprovalBridge({ logFile: env.MIA_MCP_HTTP_LOG });
+    const gate = new ToolGate();
     try {
       await bridge.start();
+      await gate.start();
     } catch (error) {
+      await bridge.close();
       await fixture.close();
       throw error;
     }
     return new ProbeContext(
       options,
       { out, examples, fixture: fixtureDir },
-      { budget, fixture, harness, bridge, deadlines, env },
+      { budget, fixture, harness, bridge, gate, deadlines, env },
     );
   }
 
@@ -120,10 +140,36 @@ export class ProbeContext {
   /** Closes the bridge and the fixture, the fixture even when closing the bridge fails. */
   async close(): Promise<void> {
     try {
+      await this.services.gate.close();
       await this.services.bridge.close();
     } finally {
       await this.services.fixture.close();
     }
+  }
+
+  /**
+   * Resolves true once `test` holds, or false once `signal` aborts first. It is checked again after every event or
+   * gate request the running step or session records.
+   */
+  async waitUntil(test: () => boolean, signal: AbortSignal): Promise<boolean> {
+    while (!test()) {
+      if (signal.aborted) return false;
+      const next = Promise.withResolvers<undefined>();
+      const wake = () => next.resolve(undefined);
+      this.eventWaiters.add(wake);
+      signal.addEventListener("abort", wake, { once: true });
+      try {
+        await next.promise;
+      } finally {
+        this.eventWaiters.delete(wake);
+        signal.removeEventListener("abort", wake);
+      }
+    }
+    return true;
+  }
+
+  private wakeWaiters(): void {
+    for (const wake of [...this.eventWaiters]) wake();
   }
 
   wants(name: string): boolean {
@@ -147,6 +193,8 @@ export class ProbeContext {
         mcp__d1__forbidden: "deny",
       },
       agentPromptFile: resolve("prompts/agent-v1.md"),
+      workerAgent: null,
+      exclusiveTools: [],
       outputDirectories: [join(this.dirs.fixture, "artifacts")],
       env: {},
       extraSettings: {},
@@ -158,6 +206,96 @@ export class ProbeContext {
     writeFileSync(join(this.dirs.out, `${name}.json`), JSON.stringify(redactValue(data), null, 2), {
       mode: 0o600,
     });
+  }
+
+  /**
+   * One manager agent's session against the real runtime (D2), counted as one live call however many turns it runs:
+   * every tool call is decided through the gate by `spec.decide`, and `spec.drive` runs the session.
+   */
+  async runSession(spec: SessionSpec): Promise<SessionRecord> {
+    validateRuntimeConfig(spec.config);
+    const workerAgent = spec.config.workerAgent;
+    if (workerAgent === null) throw new Error(`session ${spec.name} needs a worker agent`);
+    const sessionId = randomUUID();
+    const session: SessionRecord = {
+      name: spec.name,
+      session_id: sessionId,
+      events: [],
+      gate_requests: [],
+      bridge_requests: 0,
+      result: null,
+      ledger_after: null,
+      notes: [],
+      checks: {},
+    };
+    const { bridge, gate, harness } = this.services;
+    this.takeLiveCall(spec.name, spec.config.model);
+    const workerPrompt = await readFile(workerAgent.promptFile, "utf8");
+    bridge.setHandler(async () => {
+      session.bridge_requests += 1;
+      return { behavior: "deny", message: "Mia decides every call through its gate." };
+    });
+    // A killed session's held calls are answered only once the gate sees their hooks go away, after the session
+    // has ended; the record is saved once every decision is in.
+    const deciding = new Set<Promise<unknown>>();
+    gate.setHandler((request) => {
+      const decided = decide(request);
+      deciding.add(decided);
+      void decided.finally(() => deciding.delete(decided)).catch(() => undefined);
+      return decided;
+    });
+    const decide = async (request: GateRequest): Promise<GateDecision> => {
+      const eventIndex = session.events.length;
+      session.notes.push(`gate asked: ${request.toolName} by ${request.agentId ?? "manager"}`);
+      this.wakeWaiters();
+      const decision = await spec.decide(request, session);
+      const { abandoned, ...seen } = request;
+      session.gate_requests.push({
+        request: seen,
+        decision,
+        abandoned: abandoned.aborted,
+        event_index: eventIndex,
+      });
+      log("gate", request.toolName, request.agentId ?? "manager", "->", decision.behavior);
+      return decision;
+    };
+    try {
+      const handle = new ClaudeCodeSessions(spec.config, bridge, this.services.env).open({
+        runtimeConversationId: sessionId,
+        resume: false,
+        runtimeDir: this.runtimeDir(sessionId),
+        sessionIndex: 1,
+        managerPromptFile: spec.config.agentPromptFile,
+        workerPrompt,
+        gateUrl: gate.url,
+        onEvent: async (event) => {
+          session.events.push(event);
+          this.wakeWaiters();
+          if (event.type === "text_delta" && event.parentCallId === null)
+            process.stdout.write(event.text);
+          else if (event.type !== "assistant_message" && event.type !== "text_delta")
+            log(event.type, "runtimeTaskId" in event ? event.runtimeTaskId : "");
+        },
+      });
+      try {
+        await spec.drive(handle, session);
+      } finally {
+        handle.close();
+      }
+      session.result = await handle.result;
+      await untilAborted(
+        () => Promise.allSettled([...deciding]),
+        this.services.deadlines.ledgerSettled(),
+        () => [],
+      );
+    } finally {
+      gate.setHandler(null);
+      bridge.setHandler(null);
+    }
+    process.stdout.write("\n");
+    session.ledger_after = await harness.state();
+    this.save(`session-${spec.name}`, session);
+    return session;
   }
 
   /** One live turn against the real runtime, counted against the budget, recorded and saved. */
@@ -190,6 +328,7 @@ export class ProbeContext {
       agentPromptFile: spec.config.agentPromptFile,
       onEvent: async (event) => {
         step.events.push(event);
+        this.wakeWaiters();
         if (event.type === "text_delta") process.stdout.write(event.text);
         else if (event.type !== "assistant_message") log(event.type, describeEvent(event));
       },

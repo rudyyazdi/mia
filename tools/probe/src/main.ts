@@ -4,6 +4,8 @@ import { runProbe, type ProbeDeadlines, type ProbeOptions } from "./probe.ts";
 const deadlines: ProbeDeadlines = {
   slowEntered: () => AbortSignal.timeout(120_000),
   ledgerSettled: () => AbortSignal.timeout(5_000),
+  managerTurnEnded: () => AbortSignal.timeout(90_000),
+  sessionSettled: () => AbortSignal.timeout(180_000),
 };
 
 const program = new Command()

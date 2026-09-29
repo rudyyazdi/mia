@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, constants } from "node:fs";
 import { mkdir, open, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,8 +13,7 @@ import { prepareLaunch, runtimeEnvironment, type LaunchPlan, type LaunchSetup } 
 import { resolveExecutableSync } from "./resolve-executable.ts";
 import { ClaudeTranslator } from "./claude-translate.ts";
 import type { RuntimeEvent, RuntimeInit, TurnSummary } from "./runtime-events.ts";
-import { parseStreamLine, redactLine } from "./stream.ts";
-import { retainStdout } from "./transcript.ts";
+import { spawnRuntime, type RuntimeExit } from "./runtime-process.ts";
 
 export interface TurnOptions {
   text: string;
@@ -33,11 +32,6 @@ export interface TurnOptions {
    * adapter's own reports arrive whenever they happen, and the exit is handed over after the last stdout event.
    */
   onEvent: (event: RuntimeEvent) => Promise<void>;
-}
-
-interface RuntimeExit {
-  code: number | null;
-  signal: NodeJS.Signals | null;
 }
 
 export interface TurnResult {
@@ -69,8 +63,6 @@ export interface TurnHandle {
   interrupt(): Promise<RuntimeCancellation>;
 }
 
-/** How long to wait for the killed process to exit before reporting the cancellation outcome as unknown. */
-const EXIT_WAIT_MS = 5_000;
 /** How long the turn result waits for a pending interrupt() to settle after the process exit is observed. */
 const INTERRUPT_SETTLE_MS = 6_000;
 
@@ -239,32 +231,34 @@ export class ClaudeCodeAdapter {
     const { options, launch, streamLogPath } = input;
     const now = () => new Date().toISOString();
     const emit = options.onEvent;
-    /**
-     * Hands over an event that nothing waits on. `onEvent` must not reject, so nothing is left to handle; a handler
-     * that breaks that contract loses only this event, where on the stdout path its rejection stops the runtime.
-     */
-    const report = (event: RuntimeEvent): void => {
-      emit(event).catch(() => undefined);
-    };
-
-    let child: ChildProcess;
-    try {
-      // detached: the runtime becomes a process-group leader so an interruption can kill it and any helper
-      // processes it spawned (e.g. stdio MCP servers) in one signal.
-      child = spawn(launch.command, launch.args, {
-        cwd: launch.cwd,
-        env: launch.env,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
-      });
-    } catch (error) {
+    let init: RuntimeInit | null = null;
+    let summary: TurnSummary | null = null;
+    const translator = new ClaudeTranslator();
+    const runtime = spawnRuntime({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      streamLogPath,
+      launch: launch.description,
+      emit,
+      // The last init and summary the runtime reported become the TurnResult's; every event is forwarded.
+      onMessage: async (message) => {
+        for (const event of translator.translate(message, now)) {
+          if (event.type === "runtime_init") init = event.init;
+          if (event.type === "turn_result") summary = event.summary;
+          await emit(event);
+        }
+      },
+    });
+    if ("spawnFailed" in runtime)
       return {
         pid: undefined,
         result: Promise.resolve({
           status: "failed",
           summary: null,
           exit: null,
-          error: `failed to spawn runtime: ${errorMessage(error)}`,
+          error: runtime.spawnFailed,
           streamLogPath,
           hookEvidencePath: launch.files.hookEvidence,
           launch: launch.description,
@@ -274,120 +268,20 @@ export class ClaudeCodeAdapter {
         }),
         interrupt: async () => "not_needed",
       };
-    }
 
     this.bridge.setHandler(options.permissionHandler);
-    let init: RuntimeInit | null = null;
-    let summary: TurnSummary | null = null;
     let interrupted = false;
     let runtimeCancellation: RuntimeCancellation = "not_needed";
-    let spawnError: string | null = null;
-
-    child.once("spawn", () =>
-      report({
-        type: "runtime_started",
-        pid: child.pid ?? -1,
-        launch: launch.description,
-        at: now(),
-      }),
-    );
-    child.once("error", (error) => {
-      spawnError = error.message;
-    });
-    child.stdin?.on("error", () => undefined);
-    child.stdin?.end(options.text);
-
-    const translator = new ClaudeTranslator();
-    /** The last init and summary the runtime reported become the TurnResult's; every event is forwarded. */
-    const handleEvent = (event: RuntimeEvent): Promise<void> => {
-      if (event.type === "runtime_init") init = event.init;
-      if (event.type === "turn_result") summary = event.summary;
-      return emit(event);
-    };
-
-    /** Hands over one stdout line's events, each once the last is handled; returns the line's redacted text. */
-    const handleLine = async (line: string): Promise<string | null> => {
-      const parsed = parseStreamLine(line);
-      if (!parsed) return null;
-      const retained = redactLine(parsed);
-      if (parsed.ok)
-        for (const event of translator.translate(parsed.message, now)) await handleEvent(event);
-      else
-        await emit({
-          type: "malformed_event",
-          raw: retained.slice(0, 2000),
-          error: parsed.error,
-          at: now(),
-        });
-      return retained;
-    };
-    /** SIGKILLs the runtime's whole process group; see the note on interrupt below. */
-    const killRuntime = (): void => {
-      try {
-        if (child.pid) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-    };
-    /** Aborted when a stuck runtime's turn is finished without it, so its output stops being read. */
-    const stopReading = new AbortController();
-    const stdoutRead = child.stdout
-      ? retainStdout({
-          stdout: child.stdout,
-          file: streamLogPath,
-          handleLine,
-          signal: stopReading.signal,
-          reportFailure: (error) =>
-            report({
-              type: "runtime_stderr",
-              text: `[mia] could not retain the transcript: ${errorMessage(error)}`,
-              at: now(),
-            }),
-        }).catch((error: unknown) => {
-          if (stopReading.signal.aborted) return;
-          // A runtime whose output Mia no longer reads could keep acting unobserved, so it is stopped; the turn
-          // then ends as failed when the process closes.
-          killRuntime();
-          report({
-            type: "runtime_stderr",
-            text: `[mia] stopped reading runtime output, so the runtime was stopped: ${errorMessage(error)}`,
-            at: now(),
-          });
-        })
-      : Promise.resolve();
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) =>
-      report({ type: "runtime_stderr", text: redactString(chunk), at: now() }),
-    );
-
-    /**
-     * Settles once the process is gone; interrupt() judges the kill by it. On `exit`, not `close`: `close` also
-     * waits for stdout to end, which a slow event handler can hold back after the process has died.
-     */
-    const processGone = Promise.withResolvers<undefined>();
-    child.once("exit", () => processGone.resolve(undefined));
-    /** Settles when the turn may end: the process is gone and, unless it failed to spawn, stdout is drained. */
-    const exitSettled = Promise.withResolvers<RuntimeExit>();
-    // The turn ends only once every stdout line has been handled and retained, so a turn-end read sees them all.
-    child.once("close", (code, signal) => {
-      processGone.resolve(undefined);
-      const settle = () => exitSettled.resolve({ code, signal });
-      void stdoutRead.then(settle, settle);
-    });
-    child.once("error", () => {
-      processGone.resolve(undefined);
-      exitSettled.resolve({ code: null, signal: null });
-    });
-    const exited = exitSettled.promise;
+    runtime.child.stdin?.end(options.text);
 
     /** Settles (with no value) once a pending interrupt() has recorded its outcome. */
     const interruptSettled = Promise.withResolvers<undefined>();
-    const done: Promise<TurnResult> = exited.then(async (exit) => {
+    const done: Promise<TurnResult> = runtime.exited.then(async (exit) => {
       if (interrupted)
         await withinDeadline(interruptSettled.promise, INTERRUPT_SETTLE_MS, undefined);
       this.bridge.setHandler(null);
       await emit({ type: "runtime_exit", code: exit.code, signal: exit.signal, at: now() });
+      const spawnError = runtime.spawnError();
       let status: TurnResult["status"];
       let error: string | null = null;
       if (interrupted) {
@@ -424,26 +318,14 @@ export class ClaudeCodeAdapter {
      * no user-space code to retry, so no new consequential dispatch can happen after the gate closes.
      */
     const interrupt = async (): Promise<RuntimeCancellation> => {
-      if (child.exitCode !== null || child.signalCode !== null) return runtimeCancellation;
+      if (runtime.hasExited()) return runtimeCancellation;
       interrupted = true;
-      killRuntime();
-      const outcome = await withinDeadline(
-        processGone.promise.then(() => "exited" as const),
-        EXIT_WAIT_MS,
-        "timeout" as const,
-      );
-      runtimeCancellation = outcome === "exited" ? "forced_kill" : "unknown";
-      if (outcome === "timeout") {
-        // Do not let a stuck process hold the task in "interrupting" forever: finish the turn and report uncertainty.
-        child.unref();
-        stopReading.abort();
-        exitSettled.resolve({ code: null, signal: null });
-      }
+      runtimeCancellation = await runtime.kill();
       interruptSettled.resolve(undefined);
       return runtimeCancellation;
     };
 
-    return { pid: child.pid, result: done, interrupt };
+    return { pid: runtime.child.pid, result: done, interrupt };
   }
 }
 

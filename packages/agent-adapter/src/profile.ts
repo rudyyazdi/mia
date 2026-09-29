@@ -113,6 +113,13 @@ export const loadProfileSync = (path: string, env: NodeJS.ProcessEnv): Profile =
       ),
       workingDirectory: abs(parsed.data.runtime.workingDirectory),
       agentPromptFile: abs(parsed.data.runtime.agentPromptFile),
+      workerAgent:
+        parsed.data.runtime.workerAgent === null
+          ? null
+          : {
+              ...parsed.data.runtime.workerAgent,
+              promptFile: abs(parsed.data.runtime.workerAgent.promptFile),
+            },
       outputDirectories: parsed.data.runtime.outputDirectories.map(abs),
     },
   };

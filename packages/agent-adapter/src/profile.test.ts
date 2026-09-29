@@ -24,6 +24,8 @@ const profileInput = (): Profile => ({
     outputDirectories: ["out", "/absolute/output"],
     env: {},
     extraSettings: {},
+    workerAgent: null,
+    exclusiveTools: [],
   },
 });
 

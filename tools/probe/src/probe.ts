@@ -14,6 +14,7 @@ import {
   resumeAfterKill,
   streamApprove,
 } from "./steps.ts";
+import { workerBackground, workerGate, workerInterrupt, workerStop } from "./worker-steps.ts";
 
 /** Freezes redacted protocol examples from the recorded steps under the examples directory. */
 const freezeExamples = (context: ProbeContext, staticReport: StaticCapabilities): void => {
@@ -73,6 +74,10 @@ const runSteps = async (context: ProbeContext): Promise<number> => {
   if (context.wants("resume-after-kill")) await resumeAfterKill(context, s2);
   if (context.wants("interrupt-uncancellable")) await interruptUncancellable(context);
   if (context.wants("effort-control")) await effortControl(context);
+  if (context.wants("worker-gate")) await workerGate(context);
+  if (context.wants("worker-interrupt")) await workerInterrupt(context);
+  if (context.wants("worker-background")) await workerBackground(context);
+  if (context.wants("worker-stop")) await workerStop(context);
 
   freezeExamples(context, staticReport);
   context.save("summary", {

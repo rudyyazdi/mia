@@ -21,6 +21,8 @@ const validRuntime = (): RuntimeConfig => ({
   outputDirectories: [],
   env: {},
   extraSettings: {},
+  workerAgent: null,
+  exclusiveTools: [],
 });
 
 describe("policyFor", () => {

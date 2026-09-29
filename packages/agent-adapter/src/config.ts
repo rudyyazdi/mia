@@ -73,6 +73,25 @@ export const RuntimeConfigSchema = z
     ),
     /** Mia-owned agent instructions appended to the runtime's system prompt. */
     agentPromptFile: z.string().min(1),
+    /**
+     * The worker agent the manager agent delegates every tool call to (D2). Null runs D1's single agent, which makes
+     * its tool calls itself. The worker agent may use every tool the policy lists and cannot start a worker agent.
+     */
+    workerAgent: z
+      .object({
+        /** When the manager agent should delegate to it, as the runtime shows the manager agent. */
+        description: z.string().min(1),
+        /** Mia-owned worker-agent instructions. */
+        promptFile: z.string().min(1),
+      })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
+     * Tools only one worker agent may use at a time, such as computer use: the engine refuses a second concurrent
+     * call to one. Each must be a tool the policy lists.
+     */
+    exclusiveTools: z.array(z.string()).default([]),
     /** Directories from which tool-result-declared artifacts may be collected. */
     outputDirectories: z.array(z.string()),
     /** Extra environment for the runtime process (never credentials). */
@@ -126,6 +145,12 @@ export const validateRuntimeConfig = (config: RuntimeConfig): void => {
         `toolPolicy names ${identity} but no MCP server "${server}" is configured`,
       );
     }
+  }
+  for (const identity of config.exclusiveTools) {
+    if (!Object.hasOwn(config.toolPolicy, identity))
+      throw new ConfigurationError(
+        `exclusiveTools names ${identity}, which toolPolicy does not list`,
+      );
   }
   if (Object.hasOwn(config.mcpServers, "mia_approval")) {
     throw new ConfigurationError(

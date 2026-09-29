@@ -222,6 +222,8 @@ describe("probeStaticCapabilitiesSync", () => {
         outputDirectories: [],
         env: configEnv,
         extraSettings: {},
+        workerAgent: null,
+        exclusiveTools: [],
       },
       env,
     );

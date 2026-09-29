@@ -507,6 +507,7 @@ describe("mia debug watch", () => {
     await turn.emit({
       type: "tool_proposed",
       runtimeCallId: "toolu_forbidden",
+      parentCallId: null,
       toolIdentity: "mcp__d1__forbidden",
       arguments: {},
       complete: true,

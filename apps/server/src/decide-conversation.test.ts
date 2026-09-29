@@ -652,6 +652,7 @@ const streamed = (runtimeCallId: string, args: unknown): RuntimeReport => ({
   event: {
     type: "tool_proposed",
     runtimeCallId,
+    parentCallId: null,
     toolIdentity: "mcp__d1__change",
     arguments: args,
     complete: true,
@@ -745,6 +746,7 @@ describe("runtime events", () => {
         event: {
           type: "tool_result",
           runtimeCallId,
+          parentCallId: null,
           isError: false,
           content: "ok",
           raw: {},

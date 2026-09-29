@@ -62,6 +62,9 @@ export const snapshotFixture = (
       finished_at: text("task-finished"),
       text: text("user-text"),
       client_id: null,
+      turn_id: null,
+      runtime_task_id: null,
+      delegation_call_id: null,
     },
   ];
   tables.events = [
@@ -115,6 +118,7 @@ export const snapshotFixture = (
       id: executionId,
       task_id: taskId,
       conversation_id: conversationId,
+      agent_role: "single",
       runtime_identity: "fixture",
       runtime_conversation_id: null,
       requested_model: text("requested-model"),

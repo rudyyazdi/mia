@@ -375,6 +375,7 @@ export const verifyExportSync = (dir: string): VerificationResult => {
     ),
     tasks: parseTable(files.readSync(tableFile("tasks")), "tasks", RecordIdSchema),
     executions: parseTable(files.readSync(tableFile("executions")), "executions", RecordIdSchema),
+    turns: parseTable(files.readSync(tableFile("turns")), "turns", RecordIdSchema),
     events: parseTable(
       files.readSync(tableFile("events")),
       "events",
@@ -398,6 +399,11 @@ export const verifyExportSync = (dir: string): VerificationResult => {
       RecordIdSchema.extend({ tool_call_id: z.string() }) satisfies z.ZodType<
         Pick<ApprovalRow, "id" | "tool_call_id">
       >,
+    ),
+    tool_leases: parseTable(
+      files.readSync(tableFile("tool_leases")),
+      "tool_leases",
+      RecordIdSchema,
     ),
     diagnostics: parseTable(
       files.readSync(tableFile("diagnostics")),

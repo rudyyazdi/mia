@@ -22,6 +22,8 @@ import {
   type SnapshotTables,
   type TaskRow,
   type ToolCallRow,
+  type ToolLeaseRow,
+  type TurnRow,
 } from "./schema.ts";
 
 export type Rows = Record<string, unknown>[];
@@ -108,6 +110,14 @@ export const snapshotConversation = (
     );
     tables.executions = catalog.all<ExecutionRow>(
       "SELECT * FROM executions WHERE conversation_id = ? ORDER BY started_at, id",
+      conversationId,
+    );
+    tables.turns = catalog.all<TurnRow>(
+      "SELECT * FROM turns WHERE conversation_id = ? ORDER BY started_at, id",
+      conversationId,
+    );
+    tables.tool_leases = catalog.all<ToolLeaseRow>(
+      "SELECT * FROM tool_leases WHERE conversation_id = ? ORDER BY acquired_at, id",
       conversationId,
     );
     tables.tool_calls = catalog.all<ToolCallRow>(

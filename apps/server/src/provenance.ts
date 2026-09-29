@@ -51,6 +51,8 @@ export interface ConversationFile {
 /** The files a conversation's provenance retains, read by `readConversationFiles`. */
 export interface ConversationFiles {
   agentPrompt: ConversationFile;
+  /** The worker agent's prompt (D2), or null when the profile defines no worker agent. */
+  workerPrompt: ConversationFile | null;
   architecture: ConversationFile;
 }
 
@@ -81,13 +83,19 @@ export const readConversationFiles = async (input: {
   const { profile, read, signal } = input;
   const options = { signal, maxBytes: MAX_CONVERSATION_FILE_BYTES };
   const promptPath = profile.runtime.agentPromptFile;
+  const workerPath = profile.runtime.workerAgent?.promptFile ?? null;
   const architecturePath = profile.architectureDocument;
-  const [agentPrompt, architecture] = await Promise.all([
+  const [agentPrompt, workerPrompt, architecture] = await Promise.all([
     read(promptPath, options),
+    workerPath === null ? null : read(workerPath, options),
     read(architecturePath, options),
   ]);
   return {
     agentPrompt: conversationFile(promptPath, agentPrompt),
+    workerPrompt:
+      workerPath === null || workerPrompt === null
+        ? null
+        : conversationFile(workerPath, workerPrompt),
     architecture: conversationFile(architecturePath, architecture),
   };
 };
@@ -163,6 +171,19 @@ export const planConversationProvenance = (input: {
           logicalName: basename(prompt.path),
         }),
   );
+  // Mia-owned worker-agent instructions (D2), handed to the runtime as the worker agent's definition.
+  const worker = files.workerPrompt;
+  if (worker !== null)
+    items.push(
+      worker.bytes === null
+        ? unavailable("worker_prompt", `worker prompt file missing: ${worker.path}`)
+        : retained("worker_prompt", {
+            bytes: worker.bytes,
+            version: basename(worker.path).replace(/\.md$/, ""),
+            mime: "text/markdown",
+            logicalName: basename(worker.path),
+          }),
+    );
   // Exposed runtime instructions: the runtime does not expose its full system prompt over the stream.
   items.push(
     unavailable(
@@ -329,9 +350,19 @@ export const nameProvenance = (
  */
 export const agentPromptObject = (plan: {
   items: readonly ProvenanceItem<StoredObject>[];
-}): StoredObject | null => {
+}): StoredObject | null => retainedObject(plan, "agent_prompt");
+
+/** As `agentPromptObject`, for the worker agent's prompt (D2): null when missing or not configured. */
+export const workerPromptObject = (plan: {
+  items: readonly ProvenanceItem<StoredObject>[];
+}): StoredObject | null => retainedObject(plan, "worker_prompt");
+
+const retainedObject = (
+  plan: { items: readonly ProvenanceItem<StoredObject>[] },
+  role: ProvenanceRole,
+): StoredObject | null => {
   for (const item of plan.items)
-    if (item.role === "agent_prompt" && item.availability === "retained") return item.content;
+    if (item.role === role && item.availability === "retained") return item.content;
   return null;
 };
 

@@ -15,12 +15,7 @@ import {
   type TaskStatus,
   type ToolCallPolicy,
 } from "@mia/protocol";
-import {
-  conversationDirectory,
-  mcpPayload,
-  type ArtifactKind,
-  type LinkRelation,
-} from "@mia/records";
+import { mcpPayload, type ArtifactKind, type LinkRelation } from "@mia/records";
 import { captureFields, type DeclaredArtifact, type Retention } from "./artifact-capture.ts";
 import {
   callById,
@@ -40,7 +35,8 @@ import {
 import type { EngineEffect, Origin, PermissionAnswer } from "./engine-effects.ts";
 import type { EngineRecord } from "./engine-records.ts";
 import { MCP_BODY_EVENT, type McpBodyRecord } from "./mcp-bodies.ts";
-import { provenanceLinks, provenanceRecords, type NamedProvenancePlan } from "./provenance.ts";
+import { buildConversationStart, type StartIds } from "./conversation-start.ts";
+import type { NamedProvenancePlan } from "./provenance.ts";
 import { TransitionDraft, taskLinks, type BuiltTransition } from "./transition-draft.ts";
 import {
   bindPermissionRequest,
@@ -331,14 +327,6 @@ export interface ClientDisconnectedEvent {
  * provenance_recorded, conversation_started and (in debug mode) captured_in_debug_mode events. Its provenance rows
  * take the ids named with the stored plan (`NamedProvenancePlan`).
  */
-export interface StartIds {
-  conversation: string;
-  runtimeConversation: string;
-  provenanceRecorded: string;
-  started: string;
-  captured: string;
-}
-
 /**
  * A client starts a conversation. The boundary has read the files that shape it and stored and named its provenance
  * before this is decided, because reads and stores can take long, and has checked that nothing forbids the start (a
@@ -1274,6 +1262,7 @@ const taskSubmissionTransition: ConversationTransition<TaskSubmittedEvent, Submi
         id: ids.execution,
         startedAt: draft.at,
         taskId: ids.task,
+        agentRole: "single",
         conversationId: state.id,
         runtimeIdentity: RUNTIME_IDENTITY,
         runtimeConversationId: state.runtimeConversationId,
@@ -1664,54 +1653,21 @@ const conversationStart = (input: {
   now: Date;
 }): BuiltTransition => {
   const { event, now } = input;
-  const { ids, provenance: plan } = event;
   const draft = new TransitionDraft({ state: null, now, origin: event.origin });
-  const startedAt = draft.at;
-  const { records: provenanceRows, summary: provenance } = provenanceRecords(plan, startedAt);
-  const conversationId = ids.conversation;
-  draft.write(...provenanceRows, {
-    kind: "create_conversation",
-    input: {
-      id: conversationId,
-      startedAt,
-      provenanceSetId: provenance.provenance_set_id,
-      runtimeConversationId: ids.runtimeConversation,
-    },
-  });
-  draft.write(...provenanceLinks({ conversationId, plan }));
-  if (event.closes !== null)
-    draft.write({ kind: "update_conversation", id: event.closes, fields: { status: "closed" } });
-  draft.advance({
-    id: conversationId,
-    runtimeConversationId: ids.runtimeConversation,
-    provenanceSetId: provenance.provenance_set_id,
-    directory: conversationDirectory({
-      root: event.conversationsRoot,
-      id: conversationId,
-      startedAt,
+  buildConversationStart({
+    draft,
+    start: event,
+    stateOf: (conversation) => ({
+      ...conversation,
+      promptFile: event.promptFile,
+      turnCount: 0,
+      sessionStarted: false,
+      epoch: 0,
+      pendingNote: null,
+      task: null,
     }),
-    promptFile: event.promptFile,
-    turnCount: 0,
-    sessionStarted: false,
-    epoch: 0,
-    pendingNote: null,
-    task: null,
+    activate: { kind: "activate_conversation", origin: event.origin },
   });
-  draft.effect({ kind: "activate_conversation", origin: event.origin });
-  draft.record("provenance_recorded", provenance, { id: ids.provenanceRecorded });
-  draft.emit(
-    {
-      type: "conversation_started",
-      payload: {
-        conversation_id: conversationId,
-        started_at: startedAt,
-        provenance_set_id: provenance.provenance_set_id,
-      },
-    },
-    { id: ids.started },
-  );
-  // After conversation_started, so that event keeps the sequence it has with debug mode off.
-  if (event.debugMode) draft.record("captured_in_debug_mode", {}, { id: ids.captured });
   return draft.accepted();
 };
 

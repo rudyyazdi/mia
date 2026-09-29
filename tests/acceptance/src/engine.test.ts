@@ -1898,7 +1898,7 @@ describe("conversation start", () => {
       if (event.type === "conversation_started")
         active.push({
           conversation: engine.conversation?.id ?? null,
-          client: engine.activeClientId,
+          client: engine.clients.clientId,
         });
       gateway.send(connectionId, event);
     });

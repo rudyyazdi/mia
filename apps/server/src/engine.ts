@@ -34,6 +34,7 @@ import {
   type Retention,
 } from "./artifact-capture.ts";
 import type { ArtifactCollector } from "./artifact-collector.ts";
+import { ClientOwnership, recordHeartbeat } from "./client-ownership.ts";
 import {
   callById,
   callsOf,
@@ -311,13 +312,8 @@ interface ActiveTurn {
  * machine's state on, then performs the effects, so the engine never changes a conversation's state itself.
  */
 export class Engine {
-  /**
-   * The connection the active conversation's events are delivered to, and the client that owns the conversation. A
-   * start sets both (`activate_conversation`); a disconnect clears the connection; while none is active, a client's
-   * command adopts its own, if no other client owns the conversation (`adoptConnection`).
-   */
-  activeConnectionId: string | null = null;
-  activeClientId: string | null = null;
+  /** Who owns the active conversation and which connection its events reach (see `ClientOwnership`). */
+  readonly clients = new ClientOwnership();
   /**
    * The active conversation's machine, null before the first start. Its state moves only through its dispatches (see
    * `dispatch`), and is never null: a machine replaces this one only through its start (`activate_conversation`).
@@ -382,7 +378,7 @@ export class Engine {
 
   /** The client and connection a transition decided now records its events under. */
   private get origin(): Origin {
-    return { clientId: this.activeClientId, connectionId: this.activeConnectionId };
+    return this.clients.origin;
   }
 
   /** The conversation every guarded command and runtime callback operates on; callers check for one first. */
@@ -465,8 +461,7 @@ export class Engine {
     match(effect)
       .with({ kind: "activate_conversation" }, ({ origin }) => {
         this.machine = machine;
-        this.activeConnectionId = origin.connectionId;
-        this.activeClientId = origin.clientId;
+        this.clients.activate(origin);
       })
       .with({ kind: "deliver_event" }, ({ eventId, event }) =>
         this.deliver(event, {
@@ -510,7 +505,7 @@ export class Engine {
     event: OutgoingEvent,
     envelope: { id: string; conversationId: string; sequence: number | null },
   ): void {
-    const connectionId = this.activeConnectionId;
+    const { connectionId } = this.clients;
     if (!connectionId || !this.delivery) return;
     this.delivery(connectionId, {
       protocol_version: PROTOCOL_VERSION,
@@ -548,6 +543,7 @@ export class Engine {
       .with({ type: "submit_text" }, (cmd) => this.submitText(ctx, cmd.payload))
       .with({ type: "approval_decision" }, (cmd) => this.approvalDecision(ctx, cmd.payload))
       .with({ type: "interrupt_task" }, (cmd) => this.interruptTask(ctx, cmd.payload))
+      .with({ type: "interrupt_all" }, (cmd) => this.interruptAll(ctx, cmd.payload))
       .with({ type: "diagnostic_snapshot" }, (cmd) => this.diagnosticSnapshot(ctx, cmd.payload))
       .with({ type: "heartbeat" }, (cmd) => this.heartbeat(ctx, cmd.payload))
       .exhaustive();
@@ -567,9 +563,9 @@ export class Engine {
       );
     if (
       this.conversation &&
-      this.activeConnectionId &&
-      this.activeConnectionId !== ctx.connectionId &&
-      !(disconnected && this.activeClientId === ctx.clientId)
+      this.clients.connectionId &&
+      this.clients.connectionId !== ctx.connectionId &&
+      !(disconnected && this.clients.clientId === ctx.clientId)
     ) {
       return fail("busy", "another client owns the active conversation");
     }
@@ -684,7 +680,7 @@ export class Engine {
    */
   private startConnection(ctx: CommandContext, connected: boolean): string | null {
     if (connected) return ctx.connectionId;
-    return this.activeClientId === ctx.clientId ? this.activeConnectionId : null;
+    return this.clients.clientId === ctx.clientId ? this.clients.connectionId : null;
   }
 
   submitText(
@@ -871,6 +867,14 @@ export class Engine {
     return this.interrupt(addressed.task);
   }
 
+  /** The interrupt control: D1 runs at most one task, so it interrupts that one, and with none it has nothing to do. */
+  interruptAll(ctx: CommandContext, payload: { conversation_id: string }): CommandResult {
+    const guard = this.guard(ctx, payload.conversation_id);
+    if (guard) return guard;
+    const task = this.task;
+    return task ? this.interrupt(task) : { ok: true, result: { interrupted: [] } };
+  }
+
   /**
    * Interrupt the active task through the recorded path, whoever asked: a client or shutdown. Atomically, the gate
    * closes, the epoch advances, pending approvals are invalidated and the order is recorded (see
@@ -961,20 +965,16 @@ export class Engine {
     payload: Extract<ClientCommand, { type: "heartbeat" }>["payload"],
   ): CommandResult {
     try {
-      this.deps.writer.touchConnection(ctx.connectionId);
-      const conversationId =
-        payload.conversation_id && this.conversation?.id === payload.conversation_id
-          ? payload.conversation_id
-          : null;
-      this.deps.writer.recordDiagnostics({
-        id: this.deps.newId("diag"),
-        receivedAt: this.deps.now().toISOString(),
-        conversationId,
-        clientId: ctx.clientId,
-        clientConnectionId: ctx.connectionId,
-        eventId: null,
-        capturedAt: payload.captured_at,
-        state: { heartbeat: true, connection_state: payload.connection_state },
+      recordHeartbeat({
+        writer: this.deps.writer,
+        newId: this.deps.newId,
+        now: this.deps.now,
+        from: ctx,
+        conversationId:
+          payload.conversation_id && this.conversation?.id === payload.conversation_id
+            ? payload.conversation_id
+            : null,
+        payload,
       });
       return { ok: true };
     } catch (error) {
@@ -985,7 +985,7 @@ export class Engine {
   /** Disconnection is not consent: pending approvals stay pending; the connection simply stops being active. */
   onDisconnect(connectionId: string): void {
     if (this.starting?.connectionId === connectionId) this.starting.disconnected = true;
-    if (this.activeConnectionId !== connectionId) return;
+    if (this.clients.connectionId !== connectionId) return;
     if (this.conversation) {
       try {
         // Never rejected: a disconnect of the conversation's connection is always recorded.
@@ -999,20 +999,12 @@ export class Engine {
         this.deps.log(`could not record disconnect: ${String(error)}`);
       }
     }
-    this.activeConnectionId = null;
+    this.clients.disconnect(connectionId);
   }
 
   /** A reconnecting client (same client id) may resume ownership when no other connection is active. */
   adoptConnection(connectionId: string, clientId: string): boolean {
-    if (
-      this.activeConnectionId === null &&
-      (this.activeClientId === null || this.activeClientId === clientId)
-    ) {
-      this.activeConnectionId = connectionId;
-      this.activeClientId = clientId;
-      return true;
-    }
-    return false;
+    return this.clients.adopt(connectionId, clientId);
   }
 
   private guard(ctx: CommandContext, conversationId: string): CommandResult | null {
@@ -1020,11 +1012,8 @@ export class Engine {
       return fail("invalid_state", "no conversation; send start_conversation first");
     if (this.conversation.id !== conversationId)
       return fail("not_found", `conversation ${conversationId} is not active`);
-    if (this.activeConnectionId && this.activeConnectionId !== ctx.connectionId)
-      return fail("busy", "another client owns the active conversation");
-    if (!this.activeConnectionId && !this.adoptConnection(ctx.connectionId, ctx.clientId))
-      return fail("busy", "the conversation belongs to another client");
-    return null;
+    const refusal = this.clients.refusal(ctx.connectionId, ctx.clientId);
+    return refusal === null ? null : fail("busy", refusal);
   }
 
   /** The preamble every task-scoped command shares: guard the conversation, then address the one active task. */

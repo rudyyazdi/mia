@@ -1,6 +1,5 @@
 import type { Decision } from "@mia/kernel";
 import type { EventPayload, TaskStatus } from "@mia/protocol";
-import type { JournalEventType } from "@mia/records";
 import {
   callById,
   withCall,
@@ -9,21 +8,10 @@ import {
   type ConversationState,
   type TaskState,
 } from "./conversation-state.ts";
-import type { EngineEffect, Origin, OutgoingEvent } from "./engine-effects.ts";
+import { Draft, type EventLinks } from "./draft.ts";
+import type { EngineEffect, OutgoingEvent } from "./engine-effects.ts";
 import type { EngineRecord } from "./engine-records.ts";
 import type { ApprovalChange, CallChange } from "./transitions.ts";
-
-/** Linkage recorded with an event: the task and execution it belongs to and the event that caused it. */
-export interface EventLinks {
-  taskId?: string | null;
-  executionId?: string | null;
-  causedBy?: string | null;
-}
-
-/** An event's id, drawn before its transition is decided, and its linkage. */
-export interface EventOpts extends EventLinks {
-  id: string;
-}
 
 /** The linkage every event of `task`'s turn records. */
 export const taskLinks = (task: TaskState): EventLinks => ({
@@ -40,82 +28,15 @@ export type BuiltTransition = Extract<
   { kind: "accepted" }
 >;
 
-/**
- * One transition as it is built: the records it will commit, the effects it will perform once they have, and the
- * conversation state it moves to (the draft). Building touches nothing outside it, so each pure transition of
- * ./decide-conversation.ts builds through one, and a transition whose records never commit leaves nothing behind. A
- * conversation's start builds from no state (null), and advances to the conversation before it records any event. Records and
- * effects keep the order they were added in; that order is the order the catalog numbers events in and the order the
- * effects run in.
- */
-export class TransitionDraft {
-  /** The one time every row of the transition records. */
-  readonly at: string;
-  private readonly origin: Origin;
-  private next: ConversationState | null;
-  private readonly records: EngineRecord[] = [];
-  private readonly effects: EngineEffect[] = [];
-
-  constructor(input: { state: ConversationState | null; now: Date; origin: Origin }) {
-    this.next = input.state;
-    this.at = input.now.toISOString();
-    this.origin = input.origin;
-  }
-
-  /** The conversation as the transition leaves it so far: what its records name, and what it moves to. */
-  get draft(): ConversationState {
-    if (!this.next) throw new Error("the transition has no conversation to change");
-    return this.next;
-  }
-
-  /** Move the state the transition commits to. */
-  advance(next: ConversationState): void {
-    this.next = next;
+/** D1's transition draft (see `Draft`): a conversation with its one task. */
+export class TransitionDraft extends Draft<ConversationState, EngineEffect> {
+  protected delivery(eventId: string, event: OutgoingEvent): EngineEffect {
+    return { kind: "deliver_event", eventId, event };
   }
 
   /** Move the task the transition commits to; see `withTask`. */
   advanceTask(taskId: string, update: (task: TaskState) => TaskState): void {
     this.advance(withTask(this.draft, taskId, update));
-  }
-
-  /** Queue records to commit. */
-  write(...records: EngineRecord[]): void {
-    this.records.push(...records);
-  }
-
-  /** Queue an effect (see `EngineEffect`) for after the commit and its next state. */
-  effect(effect: EngineEffect): void {
-    this.effects.push(effect);
-  }
-
-  /** What the transition built, as a kernel machine's accepted decision, which always has a next state. */
-  accepted(): BuiltTransition {
-    return { kind: "accepted", next: this.draft, records: this.records, effects: this.effects };
-  }
-
-  /** Persist evidence that has no client-facing schema, under the conversation the transition records. */
-  record(type: JournalEventType, payload: unknown, opts: EventOpts): void {
-    this.write({
-      kind: "append_event",
-      input: {
-        id: opts.id,
-        receivedAt: this.at,
-        conversationId: this.draft.id,
-        type,
-        payload,
-        taskId: opts.taskId ?? null,
-        executionId: opts.executionId ?? null,
-        clientId: this.origin.clientId,
-        clientConnectionId: this.origin.connectionId,
-        causedByEventId: opts.causedBy ?? null,
-      },
-    });
-  }
-
-  /** Persist an event and queue its delivery with the id it was given and the sequence it commits at. */
-  emit(event: OutgoingEvent, opts: EventOpts): void {
-    this.record(event.type, event.payload, opts);
-    this.effect({ kind: "deliver_event", eventId: opts.id, event });
   }
 
   /** Call `callId` of task `taskId` as the transition leaves it so far. */

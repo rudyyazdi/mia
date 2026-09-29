@@ -1,5 +1,6 @@
 export { emptySnapshotTables } from "./schema.ts";
 export type {
+  AgentRole,
   ApprovalRow,
   ArtifactKind,
   CommandReply,
@@ -14,6 +15,8 @@ export type {
   ProvenanceRole,
   TaskRow,
   ToolCallRow,
+  ToolLeaseRow,
+  TurnRow,
 } from "./schema.ts";
 export { Catalog, defaultStateDir, newId, nowIso } from "./catalog.ts";
 export type { IdPrefix, NewId } from "./catalog.ts";

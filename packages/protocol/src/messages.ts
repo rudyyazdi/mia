@@ -55,6 +55,13 @@ export const TaskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
+/** What started a turn (D2): the user's input, or the end of a task the manager agent then reports. */
+export const TurnCauseSchema = z.enum(["user_input", "task_end"]);
+export type TurnCause = z.infer<typeof TurnCauseSchema>;
+
+export const TurnStatusSchema = z.enum(["running", "completed", "failed", "interrupted"]);
+export type TurnStatus = z.infer<typeof TurnStatusSchema>;
+
 /** Client-reported diagnostics; voice/display fields are explicitly not applicable in D1. */
 export const ClientDiagnosticsSchema = z.object({
   build: z.object({
@@ -106,6 +113,14 @@ export const InterruptTaskCommand = command(
   "interrupt_task",
   z.object({ conversation_id: IdSchema, task_id: IdSchema }).strict(),
 );
+/**
+ * The explicit interrupt control (D2): stops every task of the conversation through the engine, without asking the
+ * manager agent. D1's engine interrupts its one task.
+ */
+export const InterruptAllCommand = command(
+  "interrupt_all",
+  z.object({ conversation_id: IdSchema }).strict(),
+);
 export const DiagnosticSnapshotCommand = command(
   "diagnostic_snapshot",
   z.object({ conversation_id: IdSchema.nullable(), diagnostics: ClientDiagnosticsSchema }).strict(),
@@ -126,6 +141,7 @@ export const ClientCommandSchema = z.discriminatedUnion("type", [
   SubmitTextCommand,
   ApprovalDecisionCommand,
   InterruptTaskCommand,
+  InterruptAllCommand,
   DiagnosticSnapshotCommand,
   HeartbeatCommand,
 ]);
@@ -219,6 +235,28 @@ const eventPayloads = {
     execution_id: IdSchema,
     execution_epoch: z.number().int(),
     text: z.string(),
+    /** D2: the turn whose manager agent delegated this task to a worker agent. */
+    turn_id: IdSchema.optional(),
+  }),
+  /** D2: the manager agent began a turn. */
+  turn_started: z.object({
+    conversation_id: IdSchema,
+    turn_id: IdSchema,
+    cause: TurnCauseSchema,
+    /** Set when the turn reports this task's end. */
+    task_id: IdSchema.optional(),
+  }),
+  /** D2: text of the manager agent's reply in a turn. */
+  reply_delta: z.object({
+    conversation_id: IdSchema,
+    turn_id: IdSchema,
+    text: z.string(),
+  }),
+  turn_finished: z.object({
+    conversation_id: IdSchema,
+    turn_id: IdSchema,
+    status: TurnStatusSchema,
+    error: z.string().optional(),
   }),
   text_delta: z.object({
     conversation_id: IdSchema,
@@ -314,6 +352,9 @@ export const ServerEventSchema = z.discriminatedUnion("type", [
   serverEvent("ack"),
   serverEvent("conversation_started"),
   serverEvent("task_started"),
+  serverEvent("turn_started"),
+  serverEvent("reply_delta"),
+  serverEvent("turn_finished"),
   serverEvent("text_delta"),
   serverEvent("tool_call"),
   serverEvent("approval_requested"),

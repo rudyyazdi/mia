@@ -29,6 +29,9 @@ export const taskRow = (fields: Partial<TaskRow> = {}): TaskRow => ({
   finished_at: null,
   text: "summarise my inbox",
   client_id: "client-A",
+  turn_id: null,
+  runtime_task_id: null,
+  delegation_call_id: null,
   ...fields,
 });
 
@@ -36,6 +39,7 @@ export const executionRow = (fields: Partial<ExecutionRow> = {}): ExecutionRow =
   id: "x1",
   task_id: "t1",
   conversation_id: "conv",
+  agent_role: "single",
   runtime_identity: "scripted",
   runtime_conversation_id: "runtime-conv",
   requested_model: "model",

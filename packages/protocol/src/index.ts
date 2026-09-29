@@ -13,6 +13,8 @@ export {
   TaskStatusSchema,
   ToolCallStatusSchema,
   ToolPolicySchema,
+  TurnCauseSchema,
+  TurnStatusSchema,
 } from "./messages.ts";
 export type {
   AcceptedAck,
@@ -34,6 +36,8 @@ export type {
   ServerEventOf,
   ServerEventType,
   TaskStatus,
+  TurnCause,
+  TurnStatus,
   ToolCallPolicy,
   ToolCallStatus,
   ToolPolicy,

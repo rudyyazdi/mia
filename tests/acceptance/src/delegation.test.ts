@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExecutionRow, TaskRow, ToolCallRow, TurnRow } from "@mia/records";
 import type { MiaClient } from "@mia/text-client";
 import { ackError, ackResult, startTestServer, type TestServer } from "./harness.ts";
 import { ScriptedGate, ScriptedSessions, type ScriptedSession } from "./scripted-session.ts";
@@ -155,7 +156,7 @@ describe("D2: a manager agent that never blocks", () => {
 
     // The record: a manager execution with no task, one worker execution per task, turns caused by task ends.
     const conversationId = client.conversationId ?? "";
-    const executions = rows<{ agent_role: string; task_id: string | null }>(
+    const executions = rows<Pick<ExecutionRow, "agent_role" | "task_id">>(
       "SELECT agent_role, task_id FROM executions WHERE conversation_id = ?",
       conversationId,
     );
@@ -163,19 +164,19 @@ describe("D2: a manager agent that never blocks", () => {
       { agent_role: "manager", task_id: null },
     ]);
     expect(executions.filter((row) => row.agent_role === "worker")).toHaveLength(3);
-    const tasks = rows<{ id: string; turn_id: string | null; status: string }>(
+    const tasks = rows<Pick<TaskRow, "id" | "turn_id" | "status">>(
       "SELECT id, turn_id, status FROM tasks WHERE conversation_id = ? ORDER BY created_at, id",
       conversationId,
     );
     expect(tasks.every((task) => task.turn_id !== null)).toBe(true);
-    const turns = rows<{ cause: string; caused_by_task_id: string | null }>(
+    const turns = rows<Pick<TurnRow, "cause" | "caused_by_task_id">>(
       "SELECT cause, caused_by_task_id FROM turns WHERE conversation_id = ? ORDER BY started_at, rowid",
       conversationId,
     );
     expect(
       turns.filter((turn) => turn.cause === "task_end").map((turn) => turn.caused_by_task_id),
     ).toEqual(expect.arrayContaining([approval.payload.task_id]));
-    const calls = rows<{ tool_identity: string; status: string }>(
+    const calls = rows<Pick<ToolCallRow, "tool_identity" | "status">>(
       "SELECT tool_identity, status FROM tool_calls WHERE conversation_id = ?",
       conversationId,
     );

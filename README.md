@@ -2,7 +2,8 @@
 
 Mia is an open-source voice and text assistant for your own computer. This repository currently implements **Deliverable 1 (D1)**: a
 text client, a persistent server, and one agent adapter (Claude Code) with enforced per-call tool approval, interruption
-with honest outcomes, and a private, exportable conversation record. Later deliverables, including promoting the text client to the TUI, voice, views and
+with honest outcomes, and a private, exportable conversation record, plus **Deliverable 2 (D2)**: a manager agent that never
+blocks and delegates every tool call to worker agents, enabled by a profile's `runtime.workerAgent`. Later deliverables, including promoting the text client to the TUI, voice, views and
 phone clients, are described in [`docs/PLAN.md`](docs/PLAN.md) and are not implemented yet.
 
 Read first: [glossary](docs/GLOSSARY.md), [D1 plan](docs/D1/PLAN.md), [capability record](docs/D1/CAPABILITY-RECORD.md), [acceptance record](docs/D1/ACCEPTANCE-RECORD.md).
@@ -38,14 +39,18 @@ which is ignored). Every profile states:
 - `runtime.mcpServers`: the MCP servers the agent may use. `mia_approval` is reserved for the approval bridge.
 - `runtime.toolPolicy`: one entry per tool, `allow` (no prompt, still gated during interruption), `ask` (explicit
   per-call decision) or `deny`. Tools not listed are denied with a visible error.
-- `runtime.builtinTools`: must be `[]` in D1; Mia has proven an enforceable approval boundary only for MCP tools.
+- `runtime.builtinTools`: must be `[]`; Mia has proven an enforceable approval boundary only for MCP tools.
+- `runtime.workerAgent` (D2, optional): the worker agent's `description` and `promptFile`. With it, the server runs a
+  manager agent (`agentPromptFile`, e.g. `prompts/manager-v1.md`) that delegates every tool call to worker agents, and
+  `runtime.exclusiveTools` names tools only one worker agent may use at a time. See
+  `examples/config/fixture-test-delegation.json` and the capability record's D2 addendum for how calls are gated.
 
 ## Run
 
 ```sh
 npm run server -- --config path/to/profile.json      # loopback WebSocket, prints the URL
 npm run server -- --config path/to/profile.json --debug   # also marks each conversation it starts as captured in debug mode, and records the MCP bodies of calls to a server with a `bodyLog` (the controlled fixture)
-npm run client -- --config path/to/profile.json      # terminal client: text in, streamed text out, /approve /reject /interrupt
+npm run client -- --config path/to/profile.json      # terminal client: text in, streamed text out, /approve /reject /interrupt [task] /tasks
 npm run mia -- debug conversations --state <stateDirectory>
 npm run mia -- debug conversation <id> --state <stateDirectory>
 npm run mia -- debug watch <id> --state <stateDirectory>        # live web view, with an address for other devices on the network; --no-open prints the addresses only
@@ -56,7 +61,7 @@ npm run mia -- debug verify ./exports/<id>
 ## Verify against the real runtime
 
 ```sh
-npm run probe                     # capability probe (writes .mia-state/probe/<stamp>/, ~7 live turns)
+npm run probe                     # capability probe (writes .mia-state/probe/<stamp>/, ~11 live runs incl. 4 worker-agent sessions)
 npm run live -- --repeat 2        # promptfoo live lane against the controlled fixture (~24 live turns)
 ```
 

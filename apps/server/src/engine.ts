@@ -17,14 +17,12 @@ import {
 } from "@mia/agent-adapter";
 import { createKernel, Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
 import {
-  PROTOCOL_VERSION,
   errorMessage,
   type ApprovalStatus,
   type ClientCommand,
   type ClientDiagnostics,
   type Decision,
   type ErrorCode,
-  type ServerEvent,
 } from "@mia/protocol";
 import { type Catalog, type NewId, type RecordWriter, type StoredObject } from "@mia/records";
 import {
@@ -34,7 +32,7 @@ import {
   type Retention,
 } from "./artifact-capture.ts";
 import type { ArtifactCollector } from "./artifact-collector.ts";
-import { ClientOwnership, recordHeartbeat } from "./client-ownership.ts";
+import { ClientOwnership, recordHeartbeat, type Delivery } from "./client-ownership.ts";
 import {
   callById,
   callsOf,
@@ -79,9 +77,7 @@ import {
 import {
   agentPromptObject,
   nameProvenance,
-  planConversationProvenance,
-  readConversationFiles,
-  storeProvenance,
+  prepareConversationProvenance,
   type ProvenancePlan,
   type ServerIdentity,
 } from "./provenance.ts";
@@ -91,9 +87,6 @@ import {
   isReleased,
   releasedWithoutResult,
 } from "./transitions.ts";
-
-/** Sends one event to one connection. */
-export type Delivery = (connectionId: string, event: ServerEvent) => void;
 
 /** What the engine needs from an adapter; the real ClaudeCodeAdapter and scripted test substitutes both satisfy it. */
 export interface TurnRunner {
@@ -105,6 +98,19 @@ export interface CommandContext {
   clientId: string;
   commandId: string;
   clientBuild: unknown;
+}
+
+/**
+ * What the gateway and the server need from an engine: D1's `Engine` (one agent, one task) and D2's
+ * `DelegationEngine` (a manager agent and its worker agents) both are one.
+ */
+export interface CommandEngine {
+  readonly conversation: { readonly id: string } | null;
+  handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult>;
+  adoptConnection(connectionId: string, clientId: string): boolean;
+  onDisconnect(connectionId: string): void;
+  attachDelivery(delivery: Delivery): () => void;
+  shutdown(turnWait: AbortSignal): Promise<void>;
 }
 
 export type CommandResult =
@@ -321,8 +327,6 @@ export class Engine {
   private machine: ConversationMachine | null = null;
   /** The runtime running the active task's turn, if one has started (see ActiveTurn). */
   private running: ActiveTurn | null = null;
-  /** Delivers events to a connection while one is attached (attachDelivery); until then nothing is sent. */
-  private delivery: Delivery | null = null;
   /** Set once by shutdown: from then on every command is refused and no new task can start. */
   private shuttingDown = false;
   /**
@@ -505,28 +509,12 @@ export class Engine {
     event: OutgoingEvent,
     envelope: { id: string; conversationId: string; sequence: number | null },
   ): void {
-    const { connectionId } = this.clients;
-    if (!connectionId || !this.delivery) return;
-    this.delivery(connectionId, {
-      protocol_version: PROTOCOL_VERSION,
-      message_id: envelope.id,
-      conversation_id: envelope.conversationId,
-      sequence: envelope.sequence,
-      server_time: this.deps.now().toISOString(),
-      ...event,
-    });
+    this.clients.deliver(event, { ...envelope, serverTime: this.deps.now().toISOString() });
   }
 
-  /**
-   * Attach the function that delivers events to connections; the gateway attaches its own once it is
-   * listening and calls the returned detach when it closes. Attaching replaces any earlier delivery, and a
-   * detach removes only the delivery it attached, so a stale detach cannot silence its replacement.
-   */
+  /** Attach the function that delivers events to connections (see `ClientOwnership.attach`). */
   attachDelivery(delivery: Delivery): () => void {
-    this.delivery = delivery;
-    return () => {
-      if (this.delivery === delivery) this.delivery = null;
-    };
+    return this.clients.attach(delivery);
   }
 
   // ---------------------------------------------------------------- commands
@@ -590,20 +578,14 @@ export class Engine {
       const signal = AbortSignal.any([pending.abandon.signal, this.deps.evidenceReadDeadline()]);
       let plan: ProvenancePlan<StoredObject>;
       try {
-        const files = await readConversationFiles({
+        plan = await prepareConversationProvenance({
           profile: this.deps.profile,
           read: this.deps.readEvidence,
+          identity: this.deps.identity,
+          clientBuild: ctx.clientBuild,
+          objects: this.deps.writer.objects,
           signal,
         });
-        plan = await storeProvenance(
-          planConversationProvenance({
-            profile: this.deps.profile,
-            clientBuild: ctx.clientBuild,
-            identity: this.deps.identity,
-            files,
-          }),
-          { objects: this.deps.writer.objects, signal },
-        );
       } catch (error) {
         return abandonedStart(pending) ?? notCreated(error);
       }

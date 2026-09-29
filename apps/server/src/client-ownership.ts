@@ -1,6 +1,9 @@
-import type { ClientCommand } from "@mia/protocol";
+import { PROTOCOL_VERSION, type ClientCommand, type ServerEvent } from "@mia/protocol";
 import type { NewId, RecordWriter } from "@mia/records";
-import type { Origin } from "./engine-effects.ts";
+import type { Origin, OutgoingEvent } from "./engine-effects.ts";
+
+/** Sends one event to one connection. */
+export type Delivery = (connectionId: string, event: ServerEvent) => void;
 
 /**
  * Which client owns the active conversation, and which of its connections the conversation's events reach. A start
@@ -10,6 +13,37 @@ import type { Origin } from "./engine-effects.ts";
 export class ClientOwnership {
   connectionId: string | null = null;
   clientId: string | null = null;
+  /** Delivers events to a connection while one is attached (`attach`); until then nothing is sent. */
+  private delivery: Delivery | null = null;
+
+  /**
+   * Attach the function that delivers events to connections; the gateway attaches its own once it is listening and
+   * calls the returned detach when it closes. Attaching replaces any earlier delivery, and a detach removes only the
+   * delivery it attached, so a stale detach cannot silence its replacement.
+   */
+  attach(delivery: Delivery): () => void {
+    this.delivery = delivery;
+    return () => {
+      if (this.delivery === delivery) this.delivery = null;
+    };
+  }
+
+  /** Send `event` to the active connection, if there is one and a delivery is attached. */
+  deliver(
+    event: OutgoingEvent,
+    envelope: { id: string; conversationId: string; sequence: number | null; serverTime: string },
+  ): void {
+    const { connectionId, delivery } = this;
+    if (!connectionId || !delivery) return;
+    delivery(connectionId, {
+      protocol_version: PROTOCOL_VERSION,
+      message_id: envelope.id,
+      conversation_id: envelope.conversationId,
+      sequence: envelope.sequence,
+      server_time: envelope.serverTime,
+      ...event,
+    });
+  }
 
   /** The client and connection a transition decided now records its events under. */
   get origin(): Origin {

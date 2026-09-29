@@ -8,7 +8,7 @@ import {
   type ConversationState,
   type TaskState,
 } from "./conversation-state.ts";
-import { Draft, type EventLinks } from "./draft.ts";
+import { Draft, toolCallNotice, type EventLinks } from "./draft.ts";
 import type { EngineEffect, OutgoingEvent } from "./engine-effects.ts";
 import type { EngineRecord } from "./engine-records.ts";
 import type { ApprovalChange, CallChange } from "./transitions.ts";
@@ -55,16 +55,7 @@ export class TransitionDraft extends Draft<ConversationState, EngineEffect> {
     const call = this.call(taskId, callId);
     this.effect({
       kind: "notify_tool_call",
-      payload: {
-        conversation_id: this.draft.id,
-        task_id: taskId,
-        tool_call_id: call.id,
-        runtime_call_id: call.runtimeCallId,
-        tool_identity: call.toolIdentity,
-        status: call.status,
-        ...(notice ? { detail: notice } : {}),
-        redacted_arguments: call.redactedArguments,
-      },
+      payload: toolCallNotice({ conversationId: this.draft.id, taskId, call, detail: notice }),
     });
   }
 

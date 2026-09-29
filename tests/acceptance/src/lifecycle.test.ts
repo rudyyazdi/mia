@@ -16,6 +16,7 @@ import {
   mustString,
   startTestServer,
   testProfile,
+  singleAgentEngine,
 } from "./harness.ts";
 
 /** Listening TCP servers this process owns: a socket nobody closed is still counted here. */
@@ -223,7 +224,7 @@ describe("shutdown mid-turn", () => {
       const taskId = mustString(ackResult(await client.submitText("CHANGE")).task_id, "task_id");
       // The runtime is now blocked on the approval bridge, mid-turn.
       await client.waitFor("approval_requested");
-      const pid = must(testServer.server.engine.turn?.handle.pid, "runtime pid");
+      const pid = must(singleAgentEngine(testServer.server).turn?.handle.pid, "runtime pid");
       expect(processGroupExists(pid)).toBe(true);
 
       await testServer.server.close(unbounded());

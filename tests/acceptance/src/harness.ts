@@ -10,9 +10,12 @@ import {
 } from "@mia/agent-adapter";
 import {
   collectArtifact,
+  Engine,
   startServer,
   type ArtifactCollector,
+  type GateHost,
   type MiaServer,
+  type SessionRunner,
   type TurnRunner,
 } from "@mia/server";
 import type { AckError, AckPayload } from "@mia/protocol";
@@ -89,6 +92,12 @@ export const FAKE_RUNTIME = resolve(REPO_ROOT, "tests/fake-claude/bin.sh");
 /** What the fake's shell wrapper needs to find `node`; the test process's env is not read. */
 export const FAKE_RUNTIME_ENV = { PATH: dirname(process.execPath) };
 
+/** The D1 engine a test's server runs; throws for a server running D2's, which a D1 test never starts. */
+export const singleAgentEngine = (server: MiaServer): Engine => {
+  if (!(server.engine instanceof Engine)) throw new Error("the server runs D2's delegating engine");
+  return server.engine;
+};
+
 /** Narrow an optional value the test has already established must exist; throws with a readable message otherwise. */
 export const must = <T>(value: T | null | undefined, what = "value"): T => {
   if (value === null || value === undefined) throw new Error(`expected ${what} to be present`);
@@ -162,7 +171,12 @@ export const testProfile = (
 export const startTestServer = async (
   adapter: TurnRunner | undefined,
   overrides: Partial<Profile["runtime"]> = {},
-  options: { env?: NodeJS.ProcessEnv; debugMode?: boolean } = {},
+  options: {
+    env?: NodeJS.ProcessEnv;
+    debugMode?: boolean;
+    /** D2: the scripted sessions and gate a delegating profile (`overrides.workerAgent`) runs on. */
+    delegation?: { sessions: SessionRunner; gate: GateHost };
+  } = {},
 ): Promise<TestServer> => {
   const { env = {}, debugMode = false } = options;
   const dir = mkdtempSync(join(tmpdir(), "mia-acceptance-"));
@@ -203,6 +217,7 @@ export const startTestServer = async (
   const server = await startServer({
     profile,
     ...(adapter ? { adapter } : {}),
+    ...(options.delegation ?? {}),
     log,
     evidenceReadDeadline: () => evidenceDeadline.signal,
     readEvidence,

@@ -1,3 +1,4 @@
+import type { EventPayload, ToolCallStatus } from "@mia/protocol";
 import type { JournalEventType } from "@mia/records";
 import type { Origin, OutgoingEvent } from "./engine-effects.ts";
 import type { EngineRecord } from "./engine-records.ts";
@@ -90,3 +91,26 @@ export abstract class Draft<State extends { readonly id: string }, Effect> {
   /** The effect that delivers recorded event `eventId`. */
   protected abstract delivery(eventId: string, event: OutgoingEvent): Effect;
 }
+
+/** A tool call's progress notice (never recorded: the durable evidence is the events under it). */
+export const toolCallNotice = (input: {
+  conversationId: string;
+  taskId: string;
+  call: {
+    id: string;
+    runtimeCallId: string;
+    toolIdentity: string;
+    status: ToolCallStatus;
+    redactedArguments: unknown;
+  };
+  detail?: string;
+}): EventPayload<"tool_call"> => ({
+  conversation_id: input.conversationId,
+  task_id: input.taskId,
+  tool_call_id: input.call.id,
+  runtime_call_id: input.call.runtimeCallId,
+  tool_identity: input.call.toolIdentity,
+  status: input.call.status,
+  ...(input.detail ? { detail: input.detail } : {}),
+  redacted_arguments: input.call.redactedArguments,
+});

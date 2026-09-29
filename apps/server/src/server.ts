@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import {
   ApprovalBridge,
   ClaudeCodeAdapter,
+  ClaudeCodeSessions,
+  ToolGate,
   loadProfileSync,
   probeStaticCapabilitiesSync,
   readRuntimeFile,
@@ -13,6 +15,7 @@ import { errorMessage } from "@mia/protocol";
 import { Catalog, RecordWriter, newId, type NewId } from "@mia/records";
 import { collectArtifact, type ArtifactCollector } from "./artifact-collector.ts";
 import { collectBuildInfoSync } from "./build-info.ts";
+import { DelegationEngine, type GateHost, type SessionRunner } from "./delegation-engine.ts";
 import { Engine, type TurnRunner } from "./engine.ts";
 import { startGateway, type GatewayHandle } from "./gateway.ts";
 import type { ServerIdentity } from "./provenance.ts";
@@ -20,7 +23,8 @@ import type { ServerIdentity } from "./provenance.ts";
 export interface MiaServer {
   profile: Profile;
   gateway: GatewayHandle;
-  engine: Engine;
+  /** D1's engine, or D2's when the profile defines a worker agent. */
+  engine: Engine | DelegationEngine;
   catalog: Catalog;
   bridge: ApprovalBridge;
   /**
@@ -64,6 +68,10 @@ export const startServer = async (input: {
   profilePath?: string;
   profile?: Profile;
   adapter?: TurnRunner;
+  /** D2: runs the manager agent's sessions; defaults to `ClaudeCodeSessions`. A test injects a scripted one. */
+  sessions?: SessionRunner;
+  /** D2: the tool gate the sessions' hook asks; defaults to a `ToolGate` the server starts. */
+  gate?: GateHost;
   log?: (message: string) => void;
   /**
    * A fresh deadline for each turn's evidence reads, and for each conversation start's reads and stores. An entry
@@ -109,23 +117,37 @@ export const startServer = async (input: {
     const now = input.now ?? (() => new Date());
     const bridge = new ApprovalBridge({ logFile: input.env.MIA_MCP_HTTP_LOG });
     await bridge.start();
+    // Started only for a delegating profile without a test's own gate; closed with the bridge.
+    const ownGate =
+      profile.runtime.workerAgent !== null && input.gate === undefined ? new ToolGate() : null;
     try {
-      const adapter: TurnRunner =
-        input.adapter ?? new ClaudeCodeAdapter(profile.runtime, bridge, input.env);
-      const engine = new Engine({
+      await ownGate?.start();
+      const common = {
         profile,
         catalog,
         writer,
-        adapter,
         identity,
         evidenceReadDeadline: input.evidenceReadDeadline,
         readEvidence: input.readEvidence ?? readRuntimeFile,
-        collectArtifact: input.collectArtifact ?? collectArtifact,
         newId: input.newId ?? newId,
         now,
         debugMode: input.debugMode ?? false,
         log,
-      });
+      };
+      const gate = input.gate ?? ownGate;
+      const engine =
+        gate === null
+          ? new Engine({
+              ...common,
+              adapter: input.adapter ?? new ClaudeCodeAdapter(profile.runtime, bridge, input.env),
+              collectArtifact: input.collectArtifact ?? collectArtifact,
+            })
+          : new DelegationEngine({
+              ...common,
+              sessions:
+                input.sessions ?? new ClaudeCodeSessions(profile.runtime, bridge, input.env),
+              gate,
+            });
       const gateway = await startGateway({
         host: profile.server.host,
         port: profile.server.port,
@@ -152,6 +174,7 @@ export const startServer = async (input: {
         // closes after the turn so the interruption still reaches the client.
         await step(() => engine.shutdown(turnWait));
         await step(() => gateway.close(turnWait));
+        await step(() => ownGate?.close());
         await step(() => bridge.close());
         await step(() => catalog.close());
         if (errors.length > 0)
@@ -170,6 +193,7 @@ export const startServer = async (input: {
         close: (turnWait) => (shutdownStarted ??= shutdown(turnWait)),
       };
     } catch (error) {
+      await ownGate?.close();
       await bridge.close();
       throw error;
     }

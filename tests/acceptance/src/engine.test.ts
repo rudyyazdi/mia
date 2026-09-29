@@ -32,6 +32,7 @@ import {
   useScriptedSession,
   type HeldRead,
   type TestServer,
+  singleAgentEngine,
 } from "./harness.ts";
 
 let runtime: ScriptedRuntime;
@@ -331,7 +332,7 @@ describe("streaming and commands", () => {
   };
 
   it("answers a command that fails after it is recorded as failed, and never runs it again", async () => {
-    const engine = ts.server.engine;
+    const engine = singleAgentEngine(ts.server);
     const original = engine.submitText.bind(engine);
     engine.submitText = (ctx, payload) => {
       engine.submitText = original;

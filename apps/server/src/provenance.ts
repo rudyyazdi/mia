@@ -303,6 +303,31 @@ export const storeProvenance = async (
   return { ...plan, items };
 };
 
+/**
+ * Everything a conversation start does before its transaction: read its files, plan its provenance, and store the
+ * snapshots (see `readConversationFiles`, `planConversationProvenance`, `storeProvenance`).
+ */
+export const prepareConversationProvenance = async (input: {
+  profile: Profile;
+  read: RuntimeFileReader;
+  identity: ServerIdentity;
+  clientBuild: unknown;
+  objects: ObjectStore;
+  signal: AbortSignal;
+}): Promise<ProvenancePlan<StoredObject>> => {
+  const { profile, signal } = input;
+  const files = await readConversationFiles({ profile, read: input.read, signal });
+  return storeProvenance(
+    planConversationProvenance({
+      profile,
+      clientBuild: input.clientBuild,
+      identity: input.identity,
+      files,
+    }),
+    { objects: input.objects, signal },
+  );
+};
+
 /** A stored plan item with the ids of the rows it records: its entry, and for a retained one its artifact and link. */
 export type NamedProvenanceItem =
   | (Extract<ProvenanceItem<StoredObject>, { availability: "unavailable" }> & { entryId: string })

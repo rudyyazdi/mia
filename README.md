@@ -5,7 +5,7 @@ text client, a persistent server, and one agent adapter (Claude Code) with enfor
 with honest outcomes, and a private, exportable conversation record. Later deliverables, including promoting the text client to the TUI, voice, views and
 phone clients, are described in [`docs/PLAN.md`](docs/PLAN.md) and are not implemented yet.
 
-Read first: [D1 plan](docs/D1/PLAN.md), [capability record](docs/D1/CAPABILITY-RECORD.md), [acceptance record](docs/D1/ACCEPTANCE-RECORD.md).
+Read first: [glossary](docs/GLOSSARY.md), [D1 plan](docs/D1/PLAN.md), [capability record](docs/D1/CAPABILITY-RECORD.md), [acceptance record](docs/D1/ACCEPTANCE-RECORD.md).
 
 ## Prerequisites
 
@@ -68,7 +68,7 @@ on the same fixture-ledger evidence.
 
 | Path                      | Contents                                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `apps/server`             | provenance snapshots, engine (coordinator + approval/interruption controller), WebSocket gateway                   |
+| `apps/server`             | provenance snapshots, engine (conversation/task state, approval and interruption), WebSocket gateway               |
 | `apps/text-client`        | terminal client and the reusable `MiaClient`                                                                       |
 | `apps/debug-cli`          | `mia debug …` read-only inspection, export, verify, reconcile                                                      |
 | `packages/protocol`       | versioned client/server messages (zod), canonical digests, redaction                                               |

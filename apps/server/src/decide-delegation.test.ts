@@ -7,7 +7,7 @@ import {
 } from "./decide-delegation.ts";
 import type { DelegationEffect } from "./delegation-effects.ts";
 import type { DelegationState } from "./delegation-state.ts";
-import type { EngineRecord } from "./engine-records.ts";
+import { recordLabels, type EngineRecord } from "./engine-records.ts";
 
 const NOW = new Date("2026-09-29T12:00:00.000Z");
 const ORIGIN = { clientId: "client_owner", connectionId: "conn_1" };
@@ -40,9 +40,7 @@ const rejection = (state: DelegationState, event: DelegationEvent): string => {
   return decision.rejection.kind;
 };
 
-/** Each record as its event type, or its writer operation. */
-const labels = (records: readonly EngineRecord[]): string[] =>
-  records.map((record) => (record.kind === "append_event" ? record.input.type : record.kind));
+const labels = recordLabels;
 
 const effectLabels = (effects: readonly DelegationEffect[]): string[] =>
   effects.map((effect) =>

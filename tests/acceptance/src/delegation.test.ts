@@ -62,6 +62,16 @@ const delegate = (session: ScriptedSession, runtimeTaskId: string) =>
     agentId: null,
   });
 
+/** A message whose turn starts one worker agent, a1. */
+const oneWorker = async (): Promise<ScriptedSession> => {
+  ackResult(await client.submitText("go"));
+  const session = await sessions.session();
+  await session.beginTurn();
+  await delegate(session, "a1");
+  await session.startWorker("a1", "task a1");
+  return session;
+};
+
 const rows = <Row>(sql: string, ...params: string[]): Row[] => {
   const catalog = server.catalog();
   try {
@@ -184,11 +194,7 @@ describe("D2: a manager agent that never blocks", () => {
   });
 
   it("refuses a call from a worker agent it cannot attribute, and a worker agent that delegates", async () => {
-    ackResult(await client.submitText("go"));
-    const session = await sessions.session();
-    await session.beginTurn();
-    await delegate(session, "a1");
-    await session.startWorker("a1", "task a1");
+    await oneWorker();
     expect(
       await gate.ask({ toolName: "mcp__d1__read", toolUseId: "toolu_x", agentId: "a_nobody" }),
     ).toMatchObject({ behavior: "deny" });
@@ -206,11 +212,7 @@ describe("D2: a manager agent that never blocks", () => {
   });
 
   it("stops one task at the person's request, then asks the manager agent to stop its worker agent", async () => {
-    ackResult(await client.submitText("go"));
-    const session = await sessions.session();
-    await session.beginTurn();
-    await delegate(session, "a1");
-    await session.startWorker("a1", "task a1");
+    const session = await oneWorker();
     await session.endTurn();
     const started = await client.waitFor("task_started");
     ackResult(await client.interrupt(started.payload.task_id));

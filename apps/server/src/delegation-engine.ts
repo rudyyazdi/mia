@@ -12,16 +12,9 @@ import {
   type SessionHandle,
   type SessionOptions,
 } from "@mia/agent-adapter";
-import { createKernel, Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
-import {
-  errorMessage,
-  type ClientCommand,
-  type ClientDiagnostics,
-  type Decision,
-  type ErrorCode,
-} from "@mia/protocol";
+import { Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
+import { errorMessage, type ClientDiagnostics, type Decision } from "@mia/protocol";
 import type { Catalog, NewId, RecordWriter } from "@mia/records";
-import { ClientOwnership, recordHeartbeat, type Delivery } from "./client-ownership.ts";
 import {
   decideDelegation,
   type DelegationEvent,
@@ -29,18 +22,21 @@ import {
 } from "./decide-delegation.ts";
 import type { DelegationEffect, GateAnswer } from "./delegation-effects.ts";
 import type { DelegationState } from "./delegation-state.ts";
-import type { CommandContext, CommandResult } from "./engine.ts";
 import {
-  commitEvents,
-  committedEvents,
-  eventSequence,
-  type EventChange,
-} from "./engine-records.ts";
+  fail,
+  openConversationMachine,
+  ConversationEngine,
+  SHARED_KINDS,
+  type Committed,
+  prepareStart,
+  type CommandContext,
+  type CommandResult,
+} from "./engine-common.ts";
+import type { EventChange } from "./engine-records.ts";
 import {
   MAX_CONVERSATION_FILE_BYTES,
   agentPromptObject,
   nameProvenance,
-  prepareConversationProvenance,
   workerPromptObject,
   type ServerIdentity,
 } from "./provenance.ts";
@@ -88,8 +84,6 @@ const FEED_LIMITS: FeedLimits = { subscribers: 8, buffered: 256 };
  */
 const IDS_PER_TRANSITION = 64;
 
-const fail = (code: ErrorCode, message: string): CommandResult => ({ ok: false, code, message });
-
 const NOT_RECORDED: GateDecision = {
   behavior: "deny",
   message: "Mia could not record this call; it was not run.",
@@ -129,11 +123,12 @@ interface Asking {
  * calls. Every change goes through a dispatch that decides, commits the records, moves the state on and then performs
  * the effects, as D1's engine does; the runtime's reports and the gate's requests arrive as events of their own.
  */
-export class DelegationEngine {
-  readonly clients = new ClientOwnership();
-  private machine: DelegationMachine | null = null;
+export class DelegationEngine extends ConversationEngine<
+  DelegationState,
+  DelegationEvent,
+  DelegationRejection
+> {
   private session: OpenSession | null = null;
-  private shuttingDown = false;
   /** Aborted by shutdown, so a conversation start still reading its files is refused. */
   private readonly stopping = new AbortController();
   /** One conversation start at a time awaits its reads and stores. */
@@ -142,12 +137,8 @@ export class DelegationEngine {
   private asking: Asking | null = null;
 
   constructor(private readonly deps: DelegationEngineDeps) {
+    super(deps);
     deps.gate.setHandler((request) => this.decideGate(request));
-  }
-
-  /** The active conversation's state as it is now; null before the first start. */
-  get conversation(): DelegationState | null {
-    return this.machine?.state ?? null;
   }
 
   private get origin() {
@@ -162,21 +153,17 @@ export class DelegationEngine {
   // ---------------------------------------------------------------- event plumbing
 
   private openConversation(conversationId: string): DelegationMachine {
-    const kernel = createKernel<
-      Parameters<typeof commitEvents>[1][number],
-      EventChange,
-      DelegationEffect
-    >({
-      commit: (records) => commitEvents(this.deps.writer, records),
-      perform: (effect, changes) => this.perform(effect, { machine, conversationId, changes }),
-      reportEffectFailure: (error) =>
-        this.deps.log(`delivery failed after commit; records stand: ${errorMessage(error)}`),
-      replay: committedEvents(this.deps.catalog, conversationId),
+    return openConversationMachine({
+      conversationId,
+      decide: decideDelegation,
+      writer: this.deps.writer,
+      catalog: this.deps.catalog,
       now: () => this.deps.now(),
+      log: this.deps.log,
       limits: FEED_LIMITS,
+      perform: (effect, { machine, changes }) =>
+        this.perform(effect, { machine, conversationId, changes }),
     });
-    const machine: DelegationMachine = kernel.machine(decideDelegation, null);
-    return machine;
   }
 
   private dispatch(event: DelegationEvent): Dispatched<DelegationRejection, EventChange> {
@@ -197,35 +184,10 @@ export class DelegationEngine {
     }
   }
 
-  private perform(
-    effect: DelegationEffect,
-    committed: {
-      machine: DelegationMachine;
-      conversationId: string;
-      changes: readonly EventChange[];
-    },
-  ): void {
-    const { machine, conversationId, changes } = committed;
-    const serverTime = this.deps.now().toISOString();
+  private perform(effect: DelegationEffect, committed: Committed<DelegationMachine>): void {
+    const { machine } = committed;
     match(effect)
-      .with({ kind: "activate_conversation" }, ({ origin }) => {
-        this.machine = machine;
-        this.clients.activate(origin);
-      })
-      .with({ kind: "deliver_event" }, ({ eventId, event }) =>
-        this.clients.deliver(event, {
-          id: eventId,
-          conversationId,
-          sequence: eventSequence(changes, eventId),
-          serverTime,
-        }),
-      )
-      .with({ kind: "notify_tool_call" }, ({ payload }) =>
-        this.clients.deliver(
-          { type: "tool_call", payload },
-          { id: this.deps.newId("evt"), conversationId, sequence: null, serverTime },
-        ),
-      )
+      .with({ kind: SHARED_KINDS }, (shared) => this.performShared(shared, committed))
       .with({ kind: "open_session" }, ({ session }) => this.openSession(machine, session))
       .with({ kind: "send_message" }, ({ text, eventId }) => {
         if (this.session?.handle.send(text) === true) return;
@@ -423,63 +385,16 @@ export class DelegationEngine {
 
   // ---------------------------------------------------------------- commands
 
-  /** Attach the function that delivers events to connections (see `ClientOwnership.attach`). */
-  attachDelivery(delivery: Delivery): () => void {
-    return this.clients.attach(delivery);
-  }
-
-  adoptConnection(connectionId: string, clientId: string): boolean {
-    return this.clients.adopt(connectionId, clientId);
-  }
-
   /** Disconnection is not consent: pending approvals stay pending, and tasks keep running. */
   onDisconnect(connectionId: string): void {
     this.clients.disconnect(connectionId);
-  }
-
-  async handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult> {
-    if (this.shuttingDown) return fail("invalid_state", "the server is shutting down");
-    return match(command)
-      .with({ type: "start_conversation" }, () => this.startConversation(ctx))
-      .with({ type: "submit_text" }, ({ payload }) => this.submitText(ctx, payload))
-      .with({ type: "approval_decision" }, ({ payload }) => this.approvalDecision(ctx, payload))
-      .with({ type: "interrupt_task" }, ({ payload }) => this.interruptTask(ctx, payload))
-      .with({ type: "interrupt_all" }, ({ payload }) => this.interruptAll(ctx, payload))
-      .with({ type: "diagnostic_snapshot" }, ({ payload }) => this.diagnosticSnapshot(ctx, payload))
-      .with({ type: "heartbeat" }, ({ payload }) => {
-        try {
-          recordHeartbeat({
-            writer: this.deps.writer,
-            newId: this.deps.newId,
-            now: this.deps.now,
-            from: ctx,
-            conversationId:
-              this.conversation?.id === payload.conversation_id ? payload.conversation_id : null,
-            payload,
-          });
-          return Promise.resolve<CommandResult>({ ok: true });
-        } catch (error) {
-          return Promise.resolve(fail("record_failure", errorMessage(error)));
-        }
-      })
-      .exhaustive();
-  }
-
-  private guard(ctx: CommandContext, conversationId: string): CommandResult | null {
-    const conversation = this.conversation;
-    if (!conversation)
-      return fail("invalid_state", "no conversation; send start_conversation first");
-    if (conversation.id !== conversationId)
-      return fail("not_found", `conversation ${conversationId} is not active`);
-    const refusal = this.clients.refusal(ctx.connectionId, ctx.clientId);
-    return refusal === null ? null : fail("busy", refusal);
   }
 
   /**
    * Starts a conversation: reads its files and stores its provenance before the transaction, then commits the start
    * in a machine of its own. A conversation whose session is still open is not replaced: stop its work first.
    */
-  private async startConversation(ctx: CommandContext): Promise<CommandResult> {
+  async startConversation(ctx: CommandContext): Promise<CommandResult> {
     const refused = (): CommandResult | null => {
       if (this.session)
         return fail("busy", "work is running; stop it before starting a new conversation");
@@ -499,14 +414,7 @@ export class DelegationEngine {
       const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
       let stored;
       try {
-        stored = await prepareConversationProvenance({
-          profile: this.deps.profile,
-          read: this.deps.readEvidence,
-          identity: this.deps.identity,
-          clientBuild: ctx.clientBuild,
-          objects: this.deps.writer.objects,
-          signal,
-        });
+        stored = await prepareStart(this.deps, ctx, signal);
       } catch (error) {
         return fail("record_failure", `could not create conversation: ${errorMessage(error)}`);
       }
@@ -571,7 +479,7 @@ export class DelegationEngine {
   }
 
   /** A message for the manager agent: accepted while work runs, and read as its next turn's input. */
-  private submitText(
+  submitText(
     ctx: CommandContext,
     payload: { conversation_id: string; text: string },
     fromMia = false,
@@ -617,7 +525,7 @@ export class DelegationEngine {
     );
   }
 
-  private approvalDecision(
+  approvalDecision(
     ctx: CommandContext,
     payload: { conversation_id: string; task_id: string; approval_id: string; decision: Decision },
   ): Promise<CommandResult> {
@@ -686,7 +594,7 @@ export class DelegationEngine {
    * The person stops one task: its gate closes at once, then Mia asks the manager agent, in a message of its own, to
    * stop the worker agent. The closed gate holds whether or not the manager agent does.
    */
-  private async interruptTask(
+  async interruptTask(
     ctx: CommandContext,
     payload: { conversation_id: string; task_id: string },
   ): Promise<CommandResult> {
@@ -721,10 +629,7 @@ export class DelegationEngine {
   }
 
   /** The interrupt control: every task stops through the engine, whatever the manager agent does. */
-  private interruptAll(
-    ctx: CommandContext,
-    payload: { conversation_id: string },
-  ): Promise<CommandResult> {
+  interruptAll(ctx: CommandContext, payload: { conversation_id: string }): Promise<CommandResult> {
     const guard = this.guard(ctx, payload.conversation_id);
     if (guard) return Promise.resolve(guard);
     const running = [...(this.conversation?.tasks.keys() ?? [])];
@@ -753,7 +658,7 @@ export class DelegationEngine {
   }
 
   /** A client's diagnostics snapshot, recorded as its row under the conversation it is about, if it is the active one. */
-  private diagnosticSnapshot(
+  diagnosticSnapshot(
     ctx: CommandContext,
     payload: { conversation_id: string | null; diagnostics: ClientDiagnostics },
   ): Promise<CommandResult> {

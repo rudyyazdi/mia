@@ -18,7 +18,7 @@ import {
 import { type CommandReply, type RecordedCommand, type RecordWriter } from "@mia/records";
 import { decodeEnvelope } from "./decode.ts";
 import type { Delivery } from "./client-ownership.ts";
-import type { CommandEngine, CommandResult } from "./engine.ts";
+import type { CommandEngine, CommandResult } from "./engine-common.ts";
 
 export interface GatewayOptions {
   host: "127.0.0.1";

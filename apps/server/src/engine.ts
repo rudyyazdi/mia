@@ -15,14 +15,12 @@ import {
   type TurnOptions,
   type TurnResult,
 } from "@mia/agent-adapter";
-import { createKernel, Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
+import { Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
 import {
   errorMessage,
   type ApprovalStatus,
-  type ClientCommand,
   type ClientDiagnostics,
   type Decision,
-  type ErrorCode,
 } from "@mia/protocol";
 import { type Catalog, type NewId, type RecordWriter, type StoredObject } from "@mia/records";
 import {
@@ -32,7 +30,16 @@ import {
   type Retention,
 } from "./artifact-capture.ts";
 import type { ArtifactCollector } from "./artifact-collector.ts";
-import { ClientOwnership, recordHeartbeat, type Delivery } from "./client-ownership.ts";
+import {
+  fail,
+  openConversationMachine,
+  ConversationEngine,
+  SHARED_KINDS,
+  type Committed,
+  prepareStart,
+  type CommandContext,
+  type CommandResult,
+} from "./engine-common.ts";
 import {
   callById,
   callsOf,
@@ -60,24 +67,11 @@ import {
   type RuntimeReport,
   type UnresultedBodies,
 } from "./decide-conversation.ts";
-import type {
-  EngineEffect,
-  Origin,
-  OutgoingEvent,
-  PermissionAnswer,
-  TurnStart,
-} from "./engine-effects.ts";
-import {
-  commitEvents,
-  committedEvents,
-  eventSequence,
-  type EngineRecord,
-  type EventChange,
-} from "./engine-records.ts";
+import type { EngineEffect, Origin, PermissionAnswer, TurnStart } from "./engine-effects.ts";
+import type { EventChange } from "./engine-records.ts";
 import {
   agentPromptObject,
   nameProvenance,
-  prepareConversationProvenance,
   type ProvenancePlan,
   type ServerIdentity,
 } from "./provenance.ts";
@@ -92,31 +86,6 @@ import {
 export interface TurnRunner {
   submitTurn(options: TurnOptions): TurnHandle;
 }
-
-export interface CommandContext {
-  connectionId: string;
-  clientId: string;
-  commandId: string;
-  clientBuild: unknown;
-}
-
-/**
- * What the gateway and the server need from an engine: D1's `Engine` (one agent, one task) and D2's
- * `DelegationEngine` (a manager agent and its worker agents) both are one.
- */
-export interface CommandEngine {
-  readonly conversation: { readonly id: string } | null;
-  handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult>;
-  adoptConnection(connectionId: string, clientId: string): boolean;
-  onDisconnect(connectionId: string): void;
-  attachDelivery(delivery: Delivery): () => void;
-  shutdown(turnWait: AbortSignal): Promise<void>;
-}
-
-export type CommandResult =
-  { ok: true; result?: Record<string, unknown> } | { ok: false; code: ErrorCode; message: string };
-
-const fail = (code: ErrorCode, message: string): CommandResult => ({ ok: false, code, message });
 
 /** The answer to a task-scoped command naming a task that is not the active one. */
 const notActiveTask = (taskId: string): CommandResult =>
@@ -317,18 +286,13 @@ interface ActiveTurn {
  * conversation is one kernel machine (see `openConversation`): a dispatch decides, commits the records, moves the
  * machine's state on, then performs the effects, so the engine never changes a conversation's state itself.
  */
-export class Engine {
-  /** Who owns the active conversation and which connection its events reach (see `ClientOwnership`). */
-  readonly clients = new ClientOwnership();
-  /**
-   * The active conversation's machine, null before the first start. Its state moves only through its dispatches (see
-   * `dispatch`), and is never null: a machine replaces this one only through its start (`activate_conversation`).
-   */
-  private machine: ConversationMachine | null = null;
+export class Engine extends ConversationEngine<
+  ConversationState,
+  ConversationEvent,
+  ConversationRejection
+> {
   /** The runtime running the active task's turn, if one has started (see ActiveTurn). */
   private running: ActiveTurn | null = null;
-  /** Set once by shutdown: from then on every command is refused and no new task can start. */
-  private shuttingDown = false;
   /**
    * Aborted when shutdown stops waiting: a turn-end evidence read still pending is abandoned so the turn is
    * recorded before the catalog closes. Not at the start of shutdown, so a turn it kills keeps its evidence.
@@ -357,11 +321,8 @@ export class Engine {
    */
   private submitting: Submitting | null = null;
 
-  constructor(private readonly deps: EngineDeps) {}
-
-  /** The active conversation's state as it is now (see `machine`); null before the first start. */
-  get conversation(): ConversationState | null {
-    return this.machine?.state ?? null;
+  constructor(private readonly deps: EngineDeps) {
+    super(deps);
   }
 
   /** The runtime running the active task's turn, if any. */
@@ -407,18 +368,17 @@ export class Engine {
    * (#6) keeps the kernel beside it.
    */
   private openConversation(conversationId: string): ConversationMachine {
-    const kernel = createKernel<EngineRecord, EventChange, EngineEffect>({
-      commit: (records) => commitEvents(this.deps.writer, records),
-      // Performed only from inside a dispatch into `machine`, so never before it is assigned below.
-      perform: (effect, changes) => this.perform(effect, { machine, conversationId, changes }),
-      reportEffectFailure: (error) =>
-        this.deps.log(`delivery failed after commit; records stand: ${errorMessage(error)}`),
-      replay: committedEvents(this.deps.catalog, conversationId),
+    return openConversationMachine({
+      conversationId,
+      decide: decideConversation,
+      writer: this.deps.writer,
+      catalog: this.deps.catalog,
       now: () => this.deps.now(),
+      log: this.deps.log,
       limits: CONVERSATION_FEED_LIMITS,
+      perform: (effect, { machine, changes }) =>
+        this.perform(effect, { machine, conversationId, changes }),
     });
-    const machine: ConversationMachine = kernel.machine(decideConversation, null);
-    return machine;
   }
 
   /** Dispatch one event into the active conversation's machine; callers check for a conversation first. */
@@ -453,33 +413,9 @@ export class Engine {
    * that machine's state has moved on. It reads the connection, the held prompts and the active turn as they are now,
    * not as they were when the effect was queued.
    */
-  private perform(
-    effect: EngineEffect,
-    committed: {
-      machine: ConversationMachine;
-      conversationId: string;
-      changes: readonly EventChange[];
-    },
-  ): void {
-    const { machine, conversationId, changes } = committed;
+  private perform(effect: EngineEffect, committed: Committed<ConversationMachine>): void {
     match(effect)
-      .with({ kind: "activate_conversation" }, ({ origin }) => {
-        this.machine = machine;
-        this.clients.activate(origin);
-      })
-      .with({ kind: "deliver_event" }, ({ eventId, event }) =>
-        this.deliver(event, {
-          id: eventId,
-          conversationId,
-          sequence: eventSequence(changes, eventId),
-        }),
-      )
-      .with({ kind: "notify_tool_call" }, ({ payload }) =>
-        this.deliver(
-          { type: "tool_call", payload },
-          { id: this.deps.newId("evt"), conversationId, sequence: null },
-        ),
-      )
+      .with({ kind: SHARED_KINDS }, (shared) => this.performShared(shared, committed))
       .with({ kind: "answer_prompt" }, ({ approvalId, decision }) =>
         this.prompts.reply(approvalId, decision),
       )
@@ -505,37 +441,7 @@ export class Engine {
       .exhaustive();
   }
 
-  private deliver(
-    event: OutgoingEvent,
-    envelope: { id: string; conversationId: string; sequence: number | null },
-  ): void {
-    this.clients.deliver(event, { ...envelope, serverTime: this.deps.now().toISOString() });
-  }
-
-  /** Attach the function that delivers events to connections (see `ClientOwnership.attach`). */
-  attachDelivery(delivery: Delivery): () => void {
-    return this.clients.attach(delivery);
-  }
-
   // ---------------------------------------------------------------- commands
-
-  /**
-   * Run one validated client command; once shutdown has begun, every command is refused unrun. Every command but
-   * start_conversation decides and commits before this returns; a start awaits its reads and stores first, so the
-   * gateway answers other connections meanwhile.
-   */
-  async handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult> {
-    if (this.shuttingDown) return fail("invalid_state", "the server is shutting down");
-    return match(command)
-      .with({ type: "start_conversation" }, () => this.startConversation(ctx))
-      .with({ type: "submit_text" }, (cmd) => this.submitText(ctx, cmd.payload))
-      .with({ type: "approval_decision" }, (cmd) => this.approvalDecision(ctx, cmd.payload))
-      .with({ type: "interrupt_task" }, (cmd) => this.interruptTask(ctx, cmd.payload))
-      .with({ type: "interrupt_all" }, (cmd) => this.interruptAll(ctx, cmd.payload))
-      .with({ type: "diagnostic_snapshot" }, (cmd) => this.diagnosticSnapshot(ctx, cmd.payload))
-      .with({ type: "heartbeat" }, (cmd) => this.heartbeat(ctx, cmd.payload))
-      .exhaustive();
-  }
 
   /**
    * Why a conversation cannot start for `ctx` now, or null; checked again once the start's I/O has settled. A start
@@ -578,14 +484,7 @@ export class Engine {
       const signal = AbortSignal.any([pending.abandon.signal, this.deps.evidenceReadDeadline()]);
       let plan: ProvenancePlan<StoredObject>;
       try {
-        plan = await prepareConversationProvenance({
-          profile: this.deps.profile,
-          read: this.deps.readEvidence,
-          identity: this.deps.identity,
-          clientBuild: ctx.clientBuild,
-          objects: this.deps.writer.objects,
-          signal,
-        });
+        plan = await prepareStart(this.deps, ctx, signal);
       } catch (error) {
         return abandonedStart(pending) ?? notCreated(error);
       }
@@ -942,28 +841,6 @@ export class Engine {
     }
   }
 
-  heartbeat(
-    ctx: CommandContext,
-    payload: Extract<ClientCommand, { type: "heartbeat" }>["payload"],
-  ): CommandResult {
-    try {
-      recordHeartbeat({
-        writer: this.deps.writer,
-        newId: this.deps.newId,
-        now: this.deps.now,
-        from: ctx,
-        conversationId:
-          payload.conversation_id && this.conversation?.id === payload.conversation_id
-            ? payload.conversation_id
-            : null,
-        payload,
-      });
-      return { ok: true };
-    } catch (error) {
-      return fail("record_failure", String(error));
-    }
-  }
-
   /** Disconnection is not consent: pending approvals stay pending; the connection simply stops being active. */
   onDisconnect(connectionId: string): void {
     if (this.starting?.connectionId === connectionId) this.starting.disconnected = true;
@@ -982,20 +859,6 @@ export class Engine {
       }
     }
     this.clients.disconnect(connectionId);
-  }
-
-  /** A reconnecting client (same client id) may resume ownership when no other connection is active. */
-  adoptConnection(connectionId: string, clientId: string): boolean {
-    return this.clients.adopt(connectionId, clientId);
-  }
-
-  private guard(ctx: CommandContext, conversationId: string): CommandResult | null {
-    if (!this.conversation)
-      return fail("invalid_state", "no conversation; send start_conversation first");
-    if (this.conversation.id !== conversationId)
-      return fail("not_found", `conversation ${conversationId} is not active`);
-    const refusal = this.clients.refusal(ctx.connectionId, ctx.clientId);
-    return refusal === null ? null : fail("busy", refusal);
   }
 
   /** The preamble every task-scoped command shares: guard the conversation, then address the one active task. */

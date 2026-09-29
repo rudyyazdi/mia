@@ -30,7 +30,7 @@ import {
   turnNote,
 } from "./decide-conversation.ts";
 import type { EngineEffect } from "./engine-effects.ts";
-import type { EngineRecord } from "./engine-records.ts";
+import { recordLabels } from "./engine-records.ts";
 import type { McpBodyRecord } from "./mcp-bodies.ts";
 import type { NamedProvenancePlan } from "./provenance.ts";
 import type { BuiltTransition } from "./transition-draft.ts";
@@ -104,9 +104,7 @@ const accepted = (decision: Decided): BuiltTransition => {
   return { ...decision, next };
 };
 
-/** Each record as its event type, or its writer operation. */
-const labels = (records: readonly EngineRecord[]): string[] =>
-  records.map((record) => (record.kind === "append_event" ? record.input.type : record.kind));
+const labels = recordLabels;
 
 /** Each effect as its kind, with what it names. */
 const effectLabels = (effects: readonly EngineEffect[]): string[] =>

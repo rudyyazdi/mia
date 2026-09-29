@@ -58,6 +58,10 @@ export type EngineRecord =
   | { kind: "acquire_lease"; input: InputOf<"acquireLease"> }
   | { kind: "release_lease"; id: IdOf<"releaseLease">; releasedAt: ArgumentsOf<"releaseLease">[1] };
 
+/** Each record as its event type, or its writer operation: how tests and logs name what a transition records. */
+export const recordLabels = (records: readonly EngineRecord[]): string[] =>
+  records.map((record) => (record.kind === "append_event" ? record.input.type : record.kind));
+
 /** What committing one record changed: an event, with the sequence the catalog gave it, or some other row. */
 export type CommittedChange = { kind: "event"; id: string; sequence: number } | { kind: "row" };
 

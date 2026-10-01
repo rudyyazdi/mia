@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { basename, delimiter, dirname, resolve } from "node:path";
 
 export interface ExecutableLookup {
   /** The PATH the runtime is launched with; unset means spawn's default search path. */
@@ -43,13 +43,30 @@ export const resolveExecutableSync = (
   );
 };
 
-/** The environment a runtime runs with: the defined entries of `env`, overlaid with `overlay` (a profile's `env`). */
+/** Whether a PATH entry is a package's `node_modules/.bin`, which npm puts first on PATH for a script it runs. */
+const isPackageBin = (entry: string): boolean => {
+  const directory = entry.replace(/\/+$/, "");
+  return basename(directory) === ".bin" && basename(dirname(directory)) === "node_modules";
+};
+
+/**
+ * The environment a runtime runs with: the defined entries of `env`, overlaid with `overlay` (a profile's `env`).
+ * The inherited PATH loses its `node_modules/.bin` entries: `npm run` prepends them, and a dependency's bundled copy
+ * of a runtime (promptfoo bundles a Codex CLI) would otherwise shadow the one the user installed, so the runtime
+ * found, probed and launched is the same with `npm run` as without. A PATH the overlay sets is kept as it is.
+ */
 export const overlaidEnvironment = (
   env: NodeJS.ProcessEnv,
   overlay: Readonly<Record<string, string>>,
 ): Record<string, string> => {
   const merged: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) merged[name] = value;
+  if (merged.PATH !== undefined) {
+    const kept = merged.PATH.split(delimiter).filter((entry) => !isPackageBin(entry));
+    // An empty PATH would search the working directory; with nothing left, spawn's default search path applies.
+    if (kept.length === 0) delete merged.PATH;
+    else merged.PATH = kept.join(delimiter);
+  }
   return Object.assign(merged, overlay);
 };
 

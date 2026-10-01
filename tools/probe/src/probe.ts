@@ -1,7 +1,24 @@
 import { probeRuntimeSync } from "@mia/runtimes";
 import { log, ProbeContext } from "./context.ts";
 import type { ProbeDeadlines, ProbeOptions } from "./record.ts";
-import { workerBackground, workerGate, workerInterrupt, workerStop } from "./steps.ts";
+import {
+  resumeAfterRestart,
+  workerBackground,
+  workerDeny,
+  workerGate,
+  workerInterrupt,
+  workerStop,
+} from "./steps.ts";
+
+/** Every live step, by the name `--only` takes, in the order the probe runs them. */
+const STEPS: readonly [string, (context: ProbeContext) => Promise<void>][] = [
+  ["worker-gate", workerGate],
+  ["worker-deny", workerDeny],
+  ["worker-interrupt", workerInterrupt],
+  ["worker-background", workerBackground],
+  ["worker-stop", workerStop],
+  ["resume", resumeAfterRestart],
+];
 
 /** Runs the static probe and then every wanted live session; resolves to the process exit code. */
 const runSteps = async (context: ProbeContext): Promise<number> => {
@@ -16,10 +33,7 @@ const runSteps = async (context: ProbeContext): Promise<number> => {
     return 1;
   }
 
-  if (context.wants("worker-gate")) await workerGate(context);
-  if (context.wants("worker-interrupt")) await workerInterrupt(context);
-  if (context.wants("worker-background")) await workerBackground(context);
-  if (context.wants("worker-stop")) await workerStop(context);
+  for (const [name, step] of STEPS) if (context.wants(name)) await step(context);
 
   context.save("summary", {
     static: staticReport,
@@ -40,7 +54,7 @@ const runSteps = async (context: ProbeContext): Promise<number> => {
  * Capability probe: proves, against the real installed runtime, the behaviours the adapter relies on. Every session
  * is counted against the shared live-call budget, and its evidence lands in an out directory. `env` is the
  * environment the runtime inherits and supplies the live-call budget's overrides, and `deadlines` bound each wait.
- * Resolves to the exit code once the fixture, gate and bridge are released.
+ * Resolves to the exit code once the fixture and gate are released.
  */
 export const runProbe = async (
   options: ProbeOptions,

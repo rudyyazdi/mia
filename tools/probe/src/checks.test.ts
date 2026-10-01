@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@mia/agent-adapter";
 import type { SessionRecord } from "./record.ts";
-import { workerBackgroundChecks, workerGateChecks } from "./checks.ts";
+import { workerBackgroundChecks, workerDenyChecks, workerGateChecks } from "./checks.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
 
 const session = (fields: Partial<SessionRecord>): SessionRecord => ({
   name: "s",
   session_id: "s",
+  conversation_id: "s",
+  session_index: 1,
   events: [],
   gate_requests: [],
   dropped: 0,
-  bridge_requests: 0,
   result: null,
   ledger_after: null,
   notes: [],
@@ -39,9 +40,16 @@ const proposal = (parentCallId: string | null): SessionEvent => ({
   at,
 });
 
-const changeRequest = (agentId: string | null) => ({
+const changeRequest = (
+  agentId: string | null,
+  decision: { behavior: "allow" } | { behavior: "deny"; message: string } = {
+    behavior: "deny",
+    message: "rejected",
+  },
+  tool = "change",
+) => ({
   request: {
-    toolName: "mcp__fixture__change",
+    toolName: `mcp__fixture__${tool}`,
     input: {},
     toolUseId: "toolu_change",
     agentId,
@@ -49,7 +57,7 @@ const changeRequest = (agentId: string | null) => ({
     raw: {},
     receivedAt: at,
   },
-  decision: { behavior: "deny" as const, message: "rejected" },
+  decision,
   abandoned: false,
   event_index: 2,
 });
@@ -73,6 +81,37 @@ describe("workerGateChecks", () => {
     expect(disagreeing.stream_attribution_matches_gate).toBe(false);
   });
 
+  it("attributes by the gate alone a call the runtime never streamed, as Codex does for a refused call", () => {
+    const unstreamed = {
+      ...changeRequest("a1"),
+      request: { ...changeRequest("a1").request, toolUseId: "exec_change" },
+    };
+    const checks = workerGateChecks(
+      session({
+        events: [started, proposal("toolu_delegation")],
+        gate_requests: [changeRequest("a1"), unstreamed],
+      }),
+    );
+    expect(checks).toMatchObject({
+      stream_attribution_matches_gate: true,
+      fixture_calls_streamed_of_asked: "1/2",
+      every_fixture_call_attributed_to_a_worker: true,
+    });
+  });
+
+  it("fails an allowed call the stream never proposed", () => {
+    const allowed = changeRequest("a1", { behavior: "allow" });
+    const unstreamed = { ...allowed, request: { ...allowed.request, toolUseId: "exec_change" } };
+    expect(
+      workerGateChecks(
+        session({
+          events: [started, proposal("toolu_delegation")],
+          gate_requests: [allowed, unstreamed],
+        }),
+      ).stream_attribution_matches_gate,
+    ).toBe(false);
+  });
+
   it("counts a call the gate saw with no worker agent as the manager agent's own", () => {
     const checks = workerGateChecks(
       session({ events: [started, proposal(null)], gate_requests: [changeRequest(null)] }),
@@ -80,6 +119,86 @@ describe("workerGateChecks", () => {
     expect(checks).toMatchObject({
       manager_made_no_fixture_calls: false,
       every_fixture_call_attributed_to_a_worker: false,
+    });
+  });
+});
+
+const ran = (tool: string, callId: string, kind: "entered" | "committed" = "committed") => ({
+  seq: 0,
+  at,
+  kind,
+  tool,
+  call_id: callId,
+});
+
+const ledger = (...entries: ReturnType<typeof ran>[]): SessionRecord["ledger_after"] => ({
+  ledger: entries,
+  pending: [],
+  counter: 0,
+});
+
+describe("every_fixture_run_allowed_by_gate", () => {
+  it("fails when more distinct calls ran at the fixture than the gate allowed", () => {
+    const allowedOnce = [changeRequest("a1", { behavior: "allow" })];
+    const once = ledger(ran("change", "c1", "entered"), ran("change", "c1"));
+    const twice = ledger(ran("change", "c1"), ran("change", "c2"));
+    expect(
+      workerGateChecks(session({ gate_requests: allowedOnce, ledger_after: once }))
+        .every_fixture_run_allowed_by_gate,
+    ).toBe(true);
+    expect(
+      workerGateChecks(session({ gate_requests: allowedOnce, ledger_after: twice }))
+        .every_fixture_run_allowed_by_gate,
+    ).toBe(false);
+  });
+});
+
+describe("workerDenyChecks", () => {
+  const forbiddenProposal: SessionEvent = {
+    type: "tool_proposed",
+    runtimeCallId: "toolu_forbidden",
+    toolIdentity: "mcp__fixture__forbidden",
+    parentCallId: "toolu_delegation",
+    arguments: {},
+    complete: true,
+    at,
+  };
+
+  it("tells a call the runtime refused from a tool it withheld", () => {
+    expect(workerDenyChecks(session({ events: [started, forbiddenProposal] })).denied_by).toBe(
+      "runtime rule (proposed, never reached the gate)",
+    );
+    const endedWorker: SessionEvent = {
+      type: "worker_ended",
+      runtimeTaskId: "a1",
+      delegationCallId: "toolu_delegation",
+      end: "completed",
+      runtimeStatus: "completed",
+      summary: null,
+      at,
+    };
+    expect(workerDenyChecks(session({ events: [started, endedWorker] })).denied_by).toBe(
+      "runtime rule (tool withheld from the worker agent)",
+    );
+  });
+
+  it("claims nothing for a session in which no worker agent ran", () => {
+    expect(workerDenyChecks(session({}))).toMatchObject({
+      worker_ran_the_task: false,
+      denied_by: "inconclusive (no worker agent ran the task)",
+    });
+  });
+
+  it("fails a denied call that ran at the fixture", () => {
+    const asked = [changeRequest("a1", { behavior: "deny", message: "policy" }, "forbidden")];
+    expect(
+      workerDenyChecks(
+        session({ gate_requests: asked, ledger_after: ledger(ran("forbidden", "f1")) }),
+      ),
+    ).toMatchObject({
+      denied_by: "gate",
+      gate_denied_every_ask: true,
+      denied_call_never_ran: false,
     });
   });
 });

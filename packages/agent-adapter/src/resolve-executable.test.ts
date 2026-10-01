@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempDisposableSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveExecutableSync } from "./resolve-executable.ts";
+import { overlaidEnvironment, resolveExecutableSync } from "./resolve-executable.ts";
 
 const script = (path: string, mode = 0o755) => writeFileSync(path, "#!/bin/sh\n", { mode });
 
@@ -62,6 +62,36 @@ describe("resolveExecutableSync", () => {
     script(join(bin.path, literal));
     expect(resolveExecutableSync(literal, { path: bin.path, cwd: "/" })).toBe(
       join(bin.path, literal),
+    );
+  });
+});
+
+describe("overlaidEnvironment", () => {
+  it("finds the installed runtime, not a dependency's copy that npm run put first on PATH", () => {
+    using root = mkdtempDisposableSync(join(tmpdir(), "mia-path-"));
+    const packageBin = join(root.path, "node_modules", ".bin");
+    const installed = join(root.path, "installed");
+    mkdirSync(packageBin, { recursive: true });
+    mkdirSync(installed);
+    script(join(packageBin, "runtime"));
+    script(join(installed, "runtime"));
+    const inherited = { PATH: [`${packageBin}/`, installed].join(delimiter), HOME: root.path };
+    const launch = overlaidEnvironment(inherited, {});
+    expect(resolveExecutableSync("runtime", { path: launch.PATH, cwd: "/" })).toBe(
+      join(installed, "runtime"),
+    );
+    // A PATH the profile sets is its own choice, kept as it is.
+    expect(overlaidEnvironment(inherited, { PATH: packageBin }).PATH).toBe(packageBin);
+  });
+
+  it("leaves PATH unset, not empty, when every inherited entry was a package's bin", () => {
+    using work = mkdtempDisposableSync(join(tmpdir(), "mia-work-"));
+    script(join(work.path, "sh"));
+    const launch = overlaidEnvironment({ PATH: "/repo/node_modules/.bin" }, {});
+    expect(launch.PATH).toBeUndefined();
+    // Unset falls back to spawn's default search path; an empty PATH would have found the working directory's sh.
+    expect(resolveExecutableSync("sh", { path: launch.PATH, cwd: work.path })).not.toBe(
+      join(work.path, "sh"),
     );
   });
 });

@@ -81,6 +81,15 @@ export type GateDecision = { behavior: "allow" } | { behavior: "deny"; message: 
 
 export type GateHandler = (request: GateRequest) => Promise<GateDecision>;
 
+/**
+ * What the gate answers a call of a tool the policy denies or does not list. The engine sends it, and the probe sends
+ * the same, so a worker agent's reaction to a denial is probed against the words it will get.
+ */
+export const notPermitted = (toolIdentity: string): GateDecision => ({
+  behavior: "deny",
+  message: `Mia: ${toolIdentity} is not permitted. Do not retry it.`,
+});
+
 const respond = (response: ServerResponse, decision: GateDecision): void => {
   if (response.writableEnded) return;
   response.writeHead(200, { "content-type": "application/json" });

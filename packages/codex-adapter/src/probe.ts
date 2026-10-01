@@ -12,8 +12,8 @@ export const ADAPTER_VERSION = "0.1.0";
 
 /**
  * The Codex release this adapter was written and checked against: its app-server protocol is experimental, and its
- * config keys, hook output and tool names are Codex's own and change between releases, so another release is
- * refused until the adapter is checked against it.
+ * config keys, hook output and tool names are Codex's own and change between releases, so the static probe reports
+ * another release as an error until the adapter is checked against it.
  */
 export const SUPPORTED_CODEX_VERSION = "0.159.3";
 

@@ -1,6 +1,6 @@
 # Live lane: manager-prompt versions compared on fixture-ledger evidence. Run via `npm run live` (tests/acceptance/promptfoo/main.ts),
 # which starts the fixture and both server profiles and exports the environment the provider needs.
-description: Mia live acceptance scenarios (claude-sonnet-5 test lane)
+description: Mia live acceptance scenarios (on the runtime `npm run live -- --runtime` picks)
 prompts:
   - "{{scenario}}"
 providers:

@@ -1,6 +1,7 @@
 import { match } from "ts-pattern";
 import {
   isManagerTool,
+  notPermitted,
   WORKER_AGENT_NAME,
   type GateDecision,
   type HookEvidence,
@@ -933,7 +934,7 @@ const callOutcome = (
       kind: "deny",
       status: "denied",
       detail: event.policy === "deny" ? "denied by policy" : "not in Mia's tool policy",
-      decision: deny(`Mia: ${event.toolIdentity} is not permitted. Do not retry it.`),
+      decision: notPermitted(event.toolIdentity),
     };
   if (event.exclusive && state.leases.has(event.toolIdentity))
     return {

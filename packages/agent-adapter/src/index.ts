@@ -31,7 +31,7 @@ export {
   WORKER_AGENT_NAME,
 } from "./manager-tools.ts";
 export type { ManagerCall } from "./manager-tools.ts";
-export { gateHookCommand, ToolGate } from "./gate.ts";
+export { gateHookCommand, notPermitted, ToolGate } from "./gate.ts";
 export type { GateDecision, GateHandler, GateRequest } from "./gate.ts";
 export type {
   AgentRuntime,

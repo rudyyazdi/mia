@@ -1,5 +1,6 @@
-import { Command } from "commander";
-import { runProbe, type ProbeDeadlines, type ProbeOptions } from "./probe.ts";
+import { Command, Option } from "commander";
+import { LIVE_RUNTIME_NAMES, liveRuntimeOf } from "@mia/runtimes";
+import { runProbe, type ProbeDeadlines } from "./probe.ts";
 
 const deadlines: ProbeDeadlines = {
   slowEntered: () => AbortSignal.timeout(120_000),
@@ -7,11 +8,20 @@ const deadlines: ProbeDeadlines = {
   managerTurnEnded: () => AbortSignal.timeout(90_000),
   sessionSettled: () => AbortSignal.timeout(180_000),
   stopped: () => AbortSignal.timeout(5_000),
+  attribution: () => AbortSignal.timeout(15_000),
 };
 
 const program = new Command()
   .name("probe")
-  .option("--model <model>", "runtime model to probe", "claude-sonnet-5")
+  .addOption(
+    new Option("--runtime <name>", "runtime to probe")
+      .choices(LIVE_RUNTIME_NAMES)
+      .default("claude"),
+  )
+  .option(
+    "--model <model>",
+    "runtime model (default: the runtime's live default, gpt-6-luna for codex)",
+  )
   .option(
     "--out <dir>",
     "evidence directory (a timestamped subdirectory is created)",
@@ -19,4 +29,13 @@ const program = new Command()
   )
   .option("--only <names>", "comma-separated step names to run");
 program.parse();
-process.exit(await runProbe(program.opts<ProbeOptions>(), process.env, deadlines));
+const options = program.opts<{ runtime: string; model?: string; out: string; only?: string }>();
+const runtime =
+  liveRuntimeOf(options.runtime) ?? program.error(`--runtime: unknown runtime ${options.runtime}`);
+process.exit(
+  await runProbe(
+    { ...options, runtime, model: options.model ?? runtime.model },
+    process.env,
+    deadlines,
+  ),
+);

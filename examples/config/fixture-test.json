@@ -38,6 +38,6 @@
   },
   "architectureDocument": "../../docs/PLAN.md",
   "notes": [
-    "Test profile: Sonnet was chosen by the maintainer for harness testing. Every tool is routed through the approval bridge; only deny becomes a runtime rule."
+    "Test profile: Sonnet was chosen by the maintainer for harness testing; `npm run live -- --runtime codex` runs it on Codex. Every tool call is decided through Mia's gate; under Claude Code, deny also becomes a runtime rule."
   ]
 }

@@ -79,6 +79,24 @@ describe("workerGateChecks", () => {
     expect(disagreeing.stream_attribution_matches_gate).toBe(false);
   });
 
+  it("attributes by the gate alone a call the runtime never streamed, as Codex does for a refused call", () => {
+    const unstreamed = {
+      ...changeRequest("a1"),
+      request: { ...changeRequest("a1").request, toolUseId: "exec_change" },
+    };
+    const checks = workerGateChecks(
+      session({
+        events: [started, proposal("toolu_delegation")],
+        gate_requests: [changeRequest("a1"), unstreamed],
+      }),
+    );
+    expect(checks).toMatchObject({
+      stream_attribution_matches_gate: true,
+      fixture_calls_streamed_of_asked: "1/2",
+      every_fixture_call_attributed_to_a_worker: true,
+    });
+  });
+
   it("counts a call the gate saw with no worker agent as the manager agent's own", () => {
     const checks = workerGateChecks(
       session({ events: [started, proposal(null)], gate_requests: [changeRequest(null)] }),

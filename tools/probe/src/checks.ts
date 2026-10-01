@@ -59,20 +59,37 @@ const everyFixtureCallFromAWorker = (session: SessionRecord): boolean => {
 };
 
 /**
- * Every fixture call's stream proposal names the delegation call that started its worker agent, so the stream and
- * the gate agree on which worker agent made it.
+ * The fixture calls the gate saw that the stream also proposed, as "streamed/asked". Claude Code streams every call
+ * before its hook runs. Codex reports a call only once its hook has let it run, so a call the gate refused is never
+ * streamed there; the gate's `agent_id` alone attributes it.
+ */
+const streamedOfAsked = (session: SessionRecord): string => {
+  const proposed = new Set(proposalsOf(session).map((proposal) => proposal.runtimeCallId));
+  const asked = fixtureRequestsOf(session);
+  const streamed = asked.filter((entry) => proposed.has(entry.request.toolUseId ?? ""));
+  return `${streamed.length}/${asked.length}`;
+};
+
+/**
+ * Every fixture call the stream proposed names the delegation call that started the worker agent the gate saw make
+ * it, so the stream and the gate agree on which worker agent made it; at least one call was streamed.
  */
 const streamAttributionAgrees = (session: SessionRecord): boolean => {
   const delegationOf = new Map(
     workersOf(session).map((worker) => [worker.runtimeTaskId, worker.delegationCallId]),
   );
   const proposals = proposalsOf(session);
-  return fixtureRequestsOf(session).every((entry) =>
-    proposals.some(
-      (proposal) =>
-        proposal.runtimeCallId === entry.request.toolUseId &&
+  const streamed = fixtureRequestsOf(session).flatMap((entry) =>
+    proposals
+      .filter((proposal) => proposal.runtimeCallId === entry.request.toolUseId)
+      .map((proposal) => ({ entry, proposal })),
+  );
+  return (
+    streamed.length > 0 &&
+    streamed.every(
+      ({ entry, proposal }) =>
         proposal.parentCallId === delegationOf.get(entry.request.agentId ?? ""),
-    ),
+    )
   );
 };
 
@@ -95,6 +112,7 @@ export const workerGateChecks = (session: SessionRecord): Checks => {
     every_fixture_run_allowed_by_gate: everyFixtureRunAllowed(session),
     every_fixture_call_attributed_to_a_worker: everyFixtureCallFromAWorker(session),
     stream_attribution_matches_gate: streamAttributionAgrees(session),
+    fixture_calls_streamed_of_asked: streamedOfAsked(session),
     worker_end_reported: session.events.some((event) => event.type === "worker_ended"),
   };
 };

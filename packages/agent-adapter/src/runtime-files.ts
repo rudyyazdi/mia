@@ -1,110 +1,18 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, constants } from "node:fs";
+import { constants } from "node:fs";
 import { mkdir, open, writeFile, type FileHandle } from "node:fs/promises";
-import { join } from "node:path";
 import { match } from "ts-pattern";
 import { z } from "zod";
 import { errorMessage, isNotFound } from "@mia/protocol";
-import type { RuntimeConfig } from "./config.ts";
 import { untilAborted } from "./deadline.ts";
-import { runtimeEnvironment, type LaunchSetup } from "./launch.ts";
-import { resolveExecutableSync } from "./resolve-executable.ts";
 
-/** Printed verbatim as a JSON report by the probe tool, hence snake_case. */
-export interface StaticCapabilities {
-  executable_resolved: string | null;
-  runtime_version: string | null;
-  flags_present: Record<string, boolean>;
-  credential_source: "ANTHROPIC_API_KEY" | "claude_credentials_file" | "none_detected";
-  node_version: string;
-  adapter_version: string;
-  errors: string[];
+/** Directories (owner-only) to create, in order, then files (owner-only) to write into them. */
+export interface LaunchSetup {
+  directories: string[];
+  files: { path: string; content: string }[];
 }
 
-export const ADAPTER_VERSION = "0.1.0";
-const REQUIRED_FLAGS = [
-  "--output-format",
-  "--include-partial-messages",
-  "--effort",
-  "--model",
-  "--strict-mcp-config",
-  "--mcp-config",
-  "--settings",
-  "--permission-mode",
-  "--permission-prompt-tool",
-  "--input-format",
-  "--replay-user-messages",
-  "--agents",
-  "--setting-sources",
-  "--tools",
-  "--append-system-prompt-file",
-  "--session-id",
-  "--resume",
-];
-
 /**
- * Static checks: nothing here contacts a model. `env` is the environment a launch passes on (see
- * `LaunchInput.env`): the executable is looked up on the PATH and run with the environment the launch
- * derives from it (`runtimeEnvironment`), and the credential is detected from it.
- */
-export const probeStaticCapabilitiesSync = (
-  config: RuntimeConfig,
-  env: NodeJS.ProcessEnv,
-): StaticCapabilities => {
-  const errors: string[] = [];
-  // The launch spawns the runtime in config.workingDirectory with this environment, so probe it the same way.
-  const launchEnv = runtimeEnvironment(config, env);
-  const resolved = resolveExecutableSync(config.executable, {
-    path: launchEnv.PATH,
-    cwd: config.workingDirectory,
-  });
-  if (!resolved) errors.push(`runtime executable "${config.executable}" not found on PATH`);
-  let version: string | null = null;
-  const flags: Record<string, boolean> = {};
-  if (resolved) {
-    const versionProbe = spawnSync(resolved, ["--version"], {
-      encoding: "utf8",
-      timeout: 20_000,
-      env: launchEnv,
-    });
-    version = versionProbe.status === 0 ? versionProbe.stdout.trim() : null;
-    if (!version)
-      errors.push(
-        `"${resolved} --version" failed: ${versionProbe.stderr?.trim() || versionProbe.error?.message || "unknown"}`,
-      );
-    const help =
-      spawnSync(resolved, ["--help"], { encoding: "utf8", timeout: 20_000, env: launchEnv })
-        .stdout ?? "";
-    for (const flag of REQUIRED_FLAGS) {
-      // help abbreviates paired flags as --append-system-prompt[-file]
-      const abbreviated = flag.replace(/-file$/, "[-file]");
-      flags[flag] = help.includes(flag) || help.includes(abbreviated);
-    }
-    // --permission-prompt-tool is referenced in help text but not listed; presence in help is enough for the static probe.
-    for (const [flag, present] of Object.entries(flags))
-      if (!present) errors.push(`required flag ${flag} not present in --help`);
-  }
-  let credential: StaticCapabilities["credential_source"] = "none_detected";
-  if (env.ANTHROPIC_API_KEY) credential = "ANTHROPIC_API_KEY";
-  else if (existsSync(join(env.HOME ?? "", ".claude", ".credentials.json")))
-    credential = "claude_credentials_file";
-  if (credential === "none_detected")
-    errors.push(
-      "no runtime credential source detected (ANTHROPIC_API_KEY unset, ~/.claude/.credentials.json missing)",
-    );
-  return {
-    executable_resolved: resolved,
-    runtime_version: version,
-    flags_present: flags,
-    credential_source: credential,
-    node_version: process.version,
-    adapter_version: ADAPTER_VERSION,
-    errors,
-  };
-};
-
-/**
- * Creates the directories and files a session's invocation refers to (see `prepareSession`), owner-only. It
+ * Creates the directories and files a session's invocation refers to (an adapter's session plan), owner-only. It
  * settles only after every write has, so the runtime never starts on a partly written file.
  */
 export const writeLaunchFiles = async (setup: LaunchSetup): Promise<void> => {

@@ -26,11 +26,16 @@ const LAYERS = [
     mayImportAnything: false,
   },
   {
+    files: ["packages/claude-code-adapter/**"],
+    workspaces: ["@mia/claude-code-adapter"],
+    mayImportAnything: false,
+  },
+  {
     files: ["apps/*/**", "tools/*/**"],
     workspaces: ["@mia/server", "@mia/text-client", "@mia/debug-cli", "@mia/probe"],
     mayImportAnything: false,
   },
-  // Layer 4: tests are the top layer and forbid nothing, so they get no override.
+  // Tests are the top layer and forbid nothing, so they get no override.
   {
     files: ["tests/*/**"],
     workspaces: ["@mia/acceptance"],

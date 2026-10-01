@@ -17,7 +17,7 @@ const program: Command = new Command()
   .option(
     "--manager-prompt <path>",
     "manager agent prompt file, relative to the repo root",
-    "prompts/manager-v1.md",
+    "prompts/manager-v2.md",
   )
   .option("--model <model>", "runtime model", "claude-sonnet-5")
   .option("--out <dir>", "evidence directory (default: .mia-state/live/<timestamp>)");

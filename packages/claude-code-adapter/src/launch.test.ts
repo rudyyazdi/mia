@@ -3,8 +3,13 @@ import { existsSync, mkdtempDisposableSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { RuntimeConfig } from "./config.ts";
-import { MCP_TOOL_TIMEOUT_MS, prepareSession, shellQuoted } from "./launch.ts";
+import type { RuntimeConfig } from "@mia/agent-adapter";
+import {
+  DELEGATION_INSTRUCTIONS,
+  MCP_TOOL_TIMEOUT_MS,
+  prepareSession,
+  shellQuoted,
+} from "./launch.ts";
 
 /** A session plan for a minimal config working in `dir`, inheriting `env`, with `fields` replaced. */
 const planIn = (
@@ -139,6 +144,8 @@ describe("session plan", () => {
     );
     const without = planIn(directory.path, {}, { managerPromptFile: null });
     expect(without.args).not.toContain("--append-system-prompt-file");
+    // The delegation paragraph is appended either way: the manager prompt names no runtime's tools.
+    expect(flag(without, "--append-system-prompt")).toBe(DELEGATION_INSTRUCTIONS);
   });
 
   it("turns on runtime debug logging only when the given environment sets MIA_RUNTIME_DEBUG", () => {

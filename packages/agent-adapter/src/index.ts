@@ -3,9 +3,10 @@ export {
   ConfigurationError,
   policyFor,
   RuntimeConfigSchema,
+  runtimeMcpServer,
   validateRuntimeConfig,
 } from "./config.ts";
-export type { RuntimeConfig } from "./config.ts";
+export type { McpServerConfig, RuntimeConfig, RuntimeKind } from "./config.ts";
 export { bodyLogServersIn, serverBodyLog, toolContracts } from "./tool-contracts.ts";
 export type {
   BodyLogServers,
@@ -15,9 +16,6 @@ export type {
 } from "./tool-contracts.ts";
 export { loadProfileSync, ProfileSchema } from "./profile.ts";
 export type { Profile } from "./profile.ts";
-export { ApprovalBridge } from "./bridge.ts";
-export type { PermissionDecision, PermissionHandler, PermissionRequest } from "./bridge.ts";
-export { prepareSession } from "./launch.ts";
 export {
   isManagerTool,
   MANAGER_TOOLS,
@@ -26,25 +24,25 @@ export {
   WORKER_AGENT_NAME,
 } from "./manager-tools.ts";
 export type { ManagerCall } from "./manager-tools.ts";
-export type { SessionPlan, WorkerAgentDefinition } from "./launch.ts";
-export { MAX_GATE_PAYLOAD_BYTES, ToolGate } from "./gate.ts";
+export { GATE_HOOK_PATH, MAX_GATE_PAYLOAD_BYTES, ToolGate } from "./gate.ts";
 export type { GateDecision, GateHandler, GateRequest } from "./gate.ts";
-export { ClaudeCodeSessions } from "./session.ts";
-export type { SessionHandle, SessionOptions, SessionResult } from "./session.ts";
-export {
-  ADAPTER_VERSION,
-  hookEvidenceFrom,
-  probeStaticCapabilitiesSync,
-  readRuntimeFile,
-  writeLaunchFiles,
-} from "./adapter.ts";
+export type {
+  AgentRuntime,
+  LaunchDescription,
+  SessionHandle,
+  SessionOptions,
+  SessionResult,
+  SessionRunner,
+} from "./session.ts";
+export type { CredentialSource, StaticCapabilities } from "./capabilities.ts";
+export { hookEvidenceFrom, readRuntimeFile, writeLaunchFiles } from "./runtime-files.ts";
 export type {
   HookEvidence,
+  LaunchSetup,
   RuntimeFileRead,
   RuntimeFileReadOptions,
   RuntimeFileReader,
-  StaticCapabilities,
-} from "./adapter.ts";
+} from "./runtime-files.ts";
 export type {
   RuntimeEvent,
   RuntimeInit,
@@ -54,3 +52,4 @@ export type {
 } from "./runtime-events.ts";
 export { LiveCallBudget } from "./budget.ts";
 export { untilAborted } from "./deadline.ts";
+export { resolveExecutableSync } from "./resolve-executable.ts";

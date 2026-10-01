@@ -1,4 +1,4 @@
-import type { SessionPlan } from "./launch.ts";
+import type { LaunchDescription } from "./session.ts";
 
 /**
  * The runtime-independent contract between an agent runtime and the engine. A runtime's own message
@@ -32,8 +32,8 @@ export interface TurnSummary {
 }
 
 export type RuntimeEvent =
-  | { type: "runtime_started"; pid: number; launch: SessionPlan["description"]; at: string }
-  /** The runtime replayed a user message as a turn took it: the UUID Mia sent the message under. */
+  | { type: "runtime_started"; pid: number; launch: LaunchDescription; at: string }
+  /** A turn took a user message: the UUID Mia sent the message under. */
   | { type: "input_taken"; runtimeMessageId: string; at: string }
   | { type: "runtime_init"; init: RuntimeInit; at: string }
   | { type: "text_delta"; text: string; parentCallId: string | null; at: string }
@@ -41,8 +41,7 @@ export type RuntimeEvent =
       type: "tool_proposed";
       runtimeCallId: string;
       /**
-       * The delegation call whose worker agent proposed this call, or null for the manager agent's own call. Claude
-       * Code reports it as `parent_tool_use_id` on the message that carries the call.
+       * The delegation call whose worker agent proposed this call, or null for the manager agent's own call.
        */
       parentCallId: string | null;
       toolIdentity: string;

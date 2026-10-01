@@ -1,15 +1,16 @@
 import { z } from "zod";
 
 /**
- * The manager agent's own tools, named once: `Task` starts a worker agent (the runtime streams and gates its
- * calls under the name `Agent`), `TaskStop` stops one. A worker agent's tool list leaves both out.
+ * The manager agent's own tools, named once in Mia's vocabulary, which follows Claude Code's names: `Task` starts a
+ * worker agent (Claude Code streams and gates its calls under the name `Agent`), `TaskStop` stops one. An adapter
+ * whose runtime names them otherwise reports its calls under these names. A worker agent's tool list leaves both out.
  */
 export const DELEGATE_TOOLS: readonly string[] = ["Task", "Agent"];
 export const STOP_TOOL = "TaskStop";
-/** What `--tools` enables for a manager agent's session. */
+/** The tools a manager agent's session enables. */
 export const MANAGER_TOOLS = ["Task", STOP_TOOL] as const;
 
-/** The runtime's name for the worker agent Mia defines; a delegation names it as `subagent_type`. */
+/** The name of the worker agent Mia defines; a delegation names it as `subagent_type`. */
 export const WORKER_AGENT_NAME = "mia-worker";
 
 const DelegationInputSchema = z.looseObject({

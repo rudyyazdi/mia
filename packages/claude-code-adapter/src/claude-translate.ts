@@ -1,7 +1,7 @@
 import { match } from "ts-pattern";
 import { z } from "zod";
 import { redactString, redactValue } from "@mia/protocol";
-import type { RuntimeEvent, RuntimeInit, TaskEvent, TurnSummary } from "./runtime-events.ts";
+import type { RuntimeEvent, RuntimeInit, TaskEvent, TurnSummary } from "@mia/agent-adapter";
 import {
   InitMessageSchema,
   type InitMessage,

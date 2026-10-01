@@ -216,7 +216,7 @@ describe("a manager agent that never blocks", () => {
     expect(
       await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_late", agentId: "a1" }),
     ).toMatchObject({ behavior: "deny" });
-    expect((await session.waitForMessages(2))[1]).toContain("TaskStop");
+    expect((await session.waitForMessages(2))[1]).toContain("Stop that worker agent now");
   });
 
   it("asks the manager agent again when a task is stopped again after the first ask failed", async () => {
@@ -234,7 +234,7 @@ describe("a manager agent that never blocks", () => {
       already_stopping: true,
       manager_asked: true,
     });
-    expect(session.messages.at(-1)?.text).toContain("TaskStop");
+    expect(session.messages.at(-1)?.text).toContain("Stop that worker agent now");
   });
 
   it("makes a turn the user's when its delegation reaches the gate before stdout replays the message", async () => {

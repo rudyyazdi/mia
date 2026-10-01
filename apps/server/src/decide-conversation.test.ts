@@ -17,7 +17,7 @@ import { recordLabels, type EngineRecord } from "./engine-records.ts";
 
 const NOW = new Date("2026-09-29T12:00:00.000Z");
 const ORIGIN = { clientId: "client_owner", connectionId: "conn_1" };
-const REQUESTED = { model: "m", effort: "medium" as const };
+const REQUESTED = { runtime: "claude-code" as const, model: "m", effort: "medium" as const };
 
 let counter = 0;
 const newId: NewId = (prefix) => `${prefix}_${(counter += 1)}`;

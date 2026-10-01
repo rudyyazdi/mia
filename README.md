@@ -39,7 +39,7 @@ which is ignored). Every profile states:
 - `runtime.mcpServers`: the MCP servers the agent may use. `mia_approval` is reserved for the approval bridge.
 - `runtime.toolPolicy`: one entry per tool, `allow` (no prompt, still gated during interruption), `ask` (explicit
   per-call decision) or `deny`. Tools not listed are denied with a visible error.
-- `runtime.agentPromptFile` / `runtime.workerAgent`: the manager agent's prompt (e.g. `prompts/manager-v1.md`), and the
+- `runtime.agentPromptFile` / `runtime.workerAgent`: the manager agent's prompt (e.g. `prompts/manager-v2.md`), and the
   worker agent's `description` and `promptFile`. The manager agent can only delegate to and stop worker agents; worker
   agents make every tool call, each decided by Mia before it runs (see the
   [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456)).
@@ -74,17 +74,18 @@ at `MIA_LIVE_CALL_CAP` (default 50), and write their results under `.mia-state/`
 
 ## Layout
 
-| Path                      | Contents                                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `apps/server`             | provenance snapshots, engine (conversation/task state, approval and interruption), WebSocket gateway                           |
-| `apps/text-client`        | terminal client and the reusable `MiaClient`                                                                                   |
-| `apps/debug-cli`          | `mia debug …` read-only inspection, export, verify, reconcile                                                                  |
-| `packages/protocol`       | versioned client/server messages (zod), canonical digests, redaction                                                           |
-| `packages/kernel`         | dependency-free commit-first kernel: decide, commit, apply, perform; committed-change feed; held replies                       |
-| `packages/agent-adapter`  | profile loading, Claude Code adapter: session plan, stream-json parsing, tool gate, approval bridge, static probe, live budget |
-| `packages/records`        | SQLite catalog, content-addressed objects, record writer, snapshot queries, export/verify, HTML report                         |
-| `packages/mcp-http`       | loopback Streamable-HTTP host used by the fixture and the bridge                                                               |
-| `fixtures/controlled-mcp` | controlled MCP fixture with append-only ledger and barriers                                                                    |
-| `tests/acceptance`        | acceptance tests (scripted runtime), live tests                                                                                |
-| `tools/probe`             | capability probe                                                                                                               |
-| `prompts/`                | versioned manager and worker agent instructions (`manager-v1.md`, `worker-v1.md`)                                              |
+| Path                           | Contents                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `apps/server`                  | provenance snapshots, engine (conversation/task state, approval and interruption), WebSocket gateway         |
+| `apps/text-client`             | terminal client and the reusable `MiaClient`                                                                 |
+| `apps/debug-cli`               | `mia debug …` read-only inspection, export, verify, reconcile                                                |
+| `packages/protocol`            | versioned client/server messages (zod), canonical digests, redaction                                         |
+| `packages/kernel`              | dependency-free commit-first kernel: decide, commit, apply, perform; committed-change feed; held replies     |
+| `packages/agent-adapter`       | runtime-neutral session contract, profile loading, tool gate and its hook, runtime launch files, live budget |
+| `packages/claude-code-adapter` | Claude Code adapter: session plan, stream-json translation, approval bridge, static probe                    |
+| `packages/records`             | SQLite catalog, content-addressed objects, record writer, snapshot queries, export/verify, HTML report       |
+| `packages/mcp-http`            | loopback Streamable-HTTP host used by the fixture and the bridge                                             |
+| `fixtures/controlled-mcp`      | controlled MCP fixture with append-only ledger and barriers                                                  |
+| `tests/acceptance`             | acceptance tests (scripted runtime), live tests                                                              |
+| `tools/probe`                  | capability probe                                                                                             |
+| `prompts/`                     | versioned manager and worker agent instructions (`manager-v2.md`, `worker-v1.md`)                            |

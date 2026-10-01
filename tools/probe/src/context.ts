@@ -3,8 +3,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
-  ApprovalBridge,
-  ClaudeCodeSessions,
   ToolGate,
   untilAborted,
   LiveCallBudget,
@@ -13,6 +11,7 @@ import {
   type GateRequest,
   type RuntimeConfig,
 } from "@mia/agent-adapter";
+import { ClaudeCodeRuntime } from "@mia/claude-code-adapter";
 import { FixtureHarness, startFixture } from "@mia/controlled-mcp";
 import { redactValue } from "@mia/protocol";
 import type { ProbeDeadlines, ProbeOptions, SessionRecord, SessionSpec } from "./record.ts";
@@ -23,8 +22,8 @@ export const log = (...args: unknown[]) => console.log(`[probe]`, ...args);
 const MAX_RECORDED = 10_000;
 
 /**
- * Owns one probe run's evidence directory, fixture, tool gate, approval bridge and live-call budget, and the records
- * of every session run so far. `close` releases the fixture, gate and bridge.
+ * Owns one probe run's evidence directory, fixture, tool gate and live-call budget, and the records of every session
+ * run so far. Each session starts and closes its own runtime. `close` releases the fixture and gate.
  */
 export class ProbeContext {
   readonly sessions: SessionRecord[] = [];
@@ -38,7 +37,6 @@ export class ProbeContext {
       budget: LiveCallBudget;
       fixture: Awaited<ReturnType<typeof startFixture>>;
       harness: FixtureHarness;
-      bridge: ApprovalBridge;
       gate: ToolGate;
       deadlines: ProbeDeadlines;
       env: NodeJS.ProcessEnv;
@@ -57,21 +55,18 @@ export class ProbeContext {
     const fixtureDir = join(out, "fixture");
     const fixture = await startFixture({ dir: fixtureDir, mcpLogFile: env.MIA_MCP_HTTP_LOG });
     const harness = new FixtureHarness(fixture.harnessUrl);
-    const bridge = new ApprovalBridge({ logFile: env.MIA_MCP_HTTP_LOG });
     const gate = new ToolGate();
     try {
-      await bridge.start();
       await gate.start();
     } catch (error) {
       await gate.close();
-      await bridge.close();
       await fixture.close();
       throw error;
     }
     return new ProbeContext(
       options,
       { out, fixture: fixtureDir },
-      { budget, fixture, harness, bridge, gate, deadlines, env },
+      { budget, fixture, harness, gate, deadlines, env },
     );
   }
 
@@ -99,11 +94,10 @@ export class ProbeContext {
     return this.services.budget.usedSync();
   }
 
-  /** Closes the gate, the bridge and the fixture, the fixture even when closing the others fails. */
+  /** Closes the gate and the fixture, the fixture even when closing the gate fails. */
   async close(): Promise<void> {
     try {
       await this.services.gate.close();
-      await this.services.bridge.close();
     } finally {
       await this.services.fixture.close();
     }
@@ -153,7 +147,7 @@ export class ProbeContext {
         mcp__fixture__artifact: "ask",
         mcp__fixture__forbidden: "deny",
       },
-      agentPromptFile: resolve("prompts/manager-v1.md"),
+      agentPromptFile: resolve("prompts/manager-v2.md"),
       workerAgent: {
         description:
           "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
@@ -192,10 +186,16 @@ export class ProbeContext {
       notes: [],
       checks: {},
     };
-    const { bridge, gate, harness } = this.services;
+    const { gate, harness, env } = this.services;
     this.takeLiveCall(spec.name, spec.config.model);
     const workerPrompt = await readFile(spec.config.workerAgent.promptFile, "utf8");
-    bridge.setHandler(async () => {
+    const runtime = await ClaudeCodeRuntime.start({
+      config: spec.config,
+      gate,
+      env,
+      bridgeLog: env.MIA_MCP_HTTP_LOG,
+    });
+    runtime.bridge.setHandler(async () => {
       session.bridge_requests += 1;
       return { behavior: "deny", message: "Mia decides every call through its gate." };
     });
@@ -222,7 +222,7 @@ export class ProbeContext {
       return decision;
     };
     try {
-      const handle = new ClaudeCodeSessions(spec.config, { gate, bridge }, this.services.env).open({
+      const handle = runtime.sessions.open({
         runtimeConversationId: sessionId,
         resume: false,
         runtimeDir: join(this.dirs.out, "runtime", sessionId),
@@ -257,7 +257,8 @@ export class ProbeContext {
         () => [],
       );
     } finally {
-      bridge.setHandler(null);
+      runtime.bridge.setHandler(null);
+      await runtime.close();
     }
     process.stdout.write("\n");
     session.ledger_after = await harness.state();

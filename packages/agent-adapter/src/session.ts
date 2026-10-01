@@ -106,7 +106,7 @@ export class ClaudeCodeSessions {
     let closed = false;
     // One session at a time per gate: the open one's decisions go to its handler until it ends.
     const { gate } = this.transport;
-    gate.setHandler(options.decide);
+    const release = gate.setHandler(options.decide);
     const result = writeLaunchFiles(plan.setup).then(
       () => {
         if (stopped) return notStarted(null, true);
@@ -120,8 +120,8 @@ export class ClaudeCodeSessions {
         notStarted(`could not write the session files: ${errorMessage(error)}`, stopped),
     );
     result.then(
-      () => gate.clearHandler(options.decide),
-      () => gate.clearHandler(options.decide),
+      () => release(),
+      () => release(),
     );
     return {
       // eslint-disable-next-line no-restricted-syntax -- a getter, so pid reads the runtime spawned after this returns

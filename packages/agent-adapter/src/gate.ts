@@ -76,7 +76,8 @@ const readBody = async (request: IncomingMessage, limit: number): Promise<string
  * calls. Without a handler it denies: no decision is ever inferred.
  */
 export class ToolGate {
-  private handler: GateHandler | null = null;
+  /** The current claim on the gate: a fresh object per `setHandler`, so a release can tell its own claim apart. */
+  private claim: { handler: GateHandler } | null = null;
   private server: Server | null = null;
   private readonly token = randomBytes(24).toString("hex");
 
@@ -87,13 +88,16 @@ export class ToolGate {
     return `http://127.0.0.1:${port}/gate/${this.token}`;
   }
 
-  setHandler(handler: GateHandler | null): void {
-    this.handler = handler;
-  }
-
-  /** Clears `handler` if it is still the one set, so a session that ended cannot clear its successor's. */
-  clearHandler(handler: GateHandler): void {
-    if (this.handler === handler) this.handler = null;
+  /**
+   * Decides calls with `handler` until the returned release is called. A release clears only its own claim, so a
+   * session that ended after its successor claimed the gate cannot clear the successor's, even with the same handler.
+   */
+  setHandler(handler: GateHandler): () => void {
+    const claim = { handler };
+    this.claim = claim;
+    return () => {
+      if (this.claim === claim) this.claim = null;
+    };
   }
 
   async start(): Promise<string> {
@@ -134,7 +138,7 @@ export class ToolGate {
       });
       return;
     }
-    const handler = this.handler;
+    const handler = this.claim?.handler;
     if (!handler) {
       respond(response, {
         behavior: "deny",

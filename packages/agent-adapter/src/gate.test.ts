@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { MAX_GATE_PAYLOAD_BYTES, ToolGate, type GateRequest } from "./gate.ts";
+import { MAX_GATE_PAYLOAD_BYTES, ToolGate, type GateDecision, type GateRequest } from "./gate.ts";
 
 const gates: ToolGate[] = [];
 afterEach(async () => {
@@ -61,6 +61,17 @@ describe("ToolGate", () => {
     });
     await ask(gate.url, JSON.stringify({ tool_name: "Agent", tool_use_id: "toolu_2" }));
     expect(agents).toEqual([null]);
+  });
+
+  it("keeps a later claim when an earlier one with the same handler is released", async () => {
+    const gate = await started();
+    const handler = async (): Promise<GateDecision> => ({ behavior: "allow" });
+    const releaseEnded = gate.setHandler(handler);
+    const releaseCurrent = gate.setHandler(handler);
+    releaseEnded();
+    expect(await ask(gate.url, call)).toEqual({ behavior: "allow" });
+    releaseCurrent();
+    expect(await ask(gate.url, call)).toMatchObject({ behavior: "deny" });
   });
 
   it("denies malformed and oversized calls without asking the handler", async () => {

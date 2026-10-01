@@ -16,6 +16,7 @@ import {
   verifyExportSync,
 } from "@mia/records";
 import { loadProfileSync } from "@mia/agent-adapter";
+import { onRuntime, type LiveRuntime } from "@mia/runtimes";
 import {
   ATTRIBUTION_WAIT_MS,
   EVIDENCE_READ_TIMEOUT_MS,
@@ -34,6 +35,8 @@ export interface LiveOptions {
   scenarios?: ScenarioName[];
   /** The manager agent's prompt file, relative to the repo root. */
   managerPrompt: string;
+  /** The runtime both fixture profiles run on, whichever runtime they were written for, with its effort. */
+  runtime: LiveRuntime;
   model: string;
   /** The evidence directory; `.mia-state/live/<timestamp>` when absent. */
   out?: string;
@@ -108,7 +111,7 @@ const writeLiveResults = ({
     ? outDirAbs.slice(REPO_ROOT.length + 1)
     : outDirAbs;
   const md = [
-    `# Live acceptance results (${promptVersion}, ${summary.model})`,
+    `# Live acceptance results (${promptVersion}, ${summary.runtime}, ${summary.model})`,
     "",
     `Generated ${summary.generated_at} from \`${relativeOutDir}\` (private evidence directory). ${rows.filter((row) => row.pass).length}/${rows.length} rows passed. Lane L = live runtime; ledger evidence from the controlled fixture. "reported effort: unverified" means the turn used no tool, so the PreToolUse hook produced no effort evidence.`,
     ...(problems.length > 0
@@ -132,6 +135,7 @@ const writeLiveResults = ({
 interface ProfileRun {
   outDir: string;
   managerPromptPath: string;
+  runtime: LiveRuntime;
   model: string;
   /** The environment the profile's `${ENV}` placeholders resolve against. */
   profileEnv: NodeJS.ProcessEnv;
@@ -152,6 +156,8 @@ const startProfile = async (name: string, index: number, run: ProfileRun): Promi
     port: 0,
     secretFile: join(run.outDir, `state-${index}`, "client-secret"),
   };
+  profile.runtime = onRuntime(profile.runtime, run.runtime);
+  profile.runtime.effort = run.runtime.effort;
   profile.runtime.workingDirectory = join(run.outDir, `work-${index}`);
   profile.runtime.agentPromptFile = run.managerPromptPath;
   profile.runtime.model = run.model;
@@ -403,6 +409,7 @@ export const runLive = async (
   const run: ProfileRun = {
     outDir,
     managerPromptPath,
+    runtime: options.runtime,
     model: options.model,
     profileEnv: fixtureEnv,
     // The runtime inherits the runner's own environment, not the promptfoo one built here.
@@ -441,6 +448,7 @@ export const runLive = async (
   const summary = {
     generated_at: new Date().toISOString(),
     out_dir: outDir,
+    runtime: options.runtime.kind,
     model: options.model,
     prompt_version: promptVersion,
     repeat: Number(options.repeat),

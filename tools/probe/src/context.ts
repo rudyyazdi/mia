@@ -6,17 +6,24 @@ import {
   ToolGate,
   untilAborted,
   LiveCallBudget,
+  policyFor,
   validateRuntimeConfig,
   type GateDecision,
   type GateRequest,
-  type ClaudeCodeConfig,
+  type RuntimeConfig,
 } from "@mia/agent-adapter";
-import { ClaudeCodeRuntime } from "@mia/claude-code-adapter";
 import { FixtureHarness, startFixture } from "@mia/controlled-mcp";
 import { redactValue } from "@mia/protocol";
+import { onRuntime, startRuntime } from "@mia/runtimes";
 import type { ProbeDeadlines, ProbeOptions, SessionRecord, SessionSpec } from "./record.ts";
 
 export const log = (...args: unknown[]) => console.log(`[probe]`, ...args);
+
+/** What the engine answers a call its policy denies; the probe answers it the same, before the step decides. */
+const POLICY_DENIED: GateDecision = {
+  behavior: "deny",
+  message: "Mia's tool policy denies this tool.",
+};
 
 /** How many events, and how many gate requests, one session's record keeps; past it they are only counted. */
 const MAX_RECORDED = 10_000;
@@ -132,33 +139,37 @@ export class ProbeContext {
     return !this.options.only || this.options.only.split(",").includes(name);
   }
 
-  baseConfig(overrides: Partial<ClaudeCodeConfig> = {}): ClaudeCodeConfig {
-    return {
-      kind: "claude-code",
-      executable: "claude",
-      model: this.options.model,
-      effort: "medium",
-      workingDirectory: join(this.dirs.out, "work"),
-      mcpServers: { fixture: { type: "http", url: this.services.fixture.mcpUrl } },
-      toolPolicy: {
-        mcp__fixture__read: "allow",
-        mcp__fixture__change: "ask",
-        mcp__fixture__slow: "ask",
-        mcp__fixture__artifact: "ask",
-        mcp__fixture__forbidden: "deny",
+  /** The probe's profile on the runtime it was asked to probe, with its model and effort. */
+  baseConfig(): RuntimeConfig {
+    const { runtime, model } = this.options;
+    return onRuntime(
+      {
+        kind: "claude-code",
+        executable: "claude",
+        model,
+        effort: runtime.effort,
+        workingDirectory: join(this.dirs.out, "work"),
+        mcpServers: { fixture: { type: "http", url: this.services.fixture.mcpUrl } },
+        toolPolicy: {
+          mcp__fixture__read: "allow",
+          mcp__fixture__change: "ask",
+          mcp__fixture__slow: "ask",
+          mcp__fixture__artifact: "ask",
+          mcp__fixture__forbidden: "deny",
+        },
+        agentPromptFile: resolve("prompts/manager-v2.md"),
+        workerAgent: {
+          description:
+            "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
+          promptFile: resolve("prompts/worker-v1.md"),
+        },
+        exclusiveTools: [],
+        outputDirectories: [join(this.dirs.fixture, "artifacts")],
+        env: {},
+        extraSettings: {},
       },
-      agentPromptFile: resolve("prompts/manager-v2.md"),
-      workerAgent: {
-        description:
-          "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
-        promptFile: resolve("prompts/worker-v1.md"),
-      },
-      exclusiveTools: [],
-      outputDirectories: [join(this.dirs.fixture, "artifacts")],
-      env: {},
-      extraSettings: {},
-      ...overrides,
-    };
+      runtime,
+    );
   }
 
   save(name: string, data: unknown): void {
@@ -168,8 +179,9 @@ export class ProbeContext {
   }
 
   /**
-   * One manager agent's session against the real runtime, counted as one live call however many turns it runs:
-   * every tool call is decided through the gate by `spec.decide`, and `spec.drive` runs the session.
+   * One manager agent's session against the real runtime, started as the server starts it and counted as one live
+   * call however many turns it runs: every tool call is decided through the gate, a policy-denied one as the engine
+   * decides it and any other by `spec.decide`, and `spec.drive` runs the session.
    */
   async runSession(spec: SessionSpec): Promise<SessionRecord> {
     validateRuntimeConfig(spec.config);
@@ -180,7 +192,6 @@ export class ProbeContext {
       events: [],
       gate_requests: [],
       dropped: 0,
-      bridge_requests: 0,
       result: null,
       ledger_after: null,
       notes: [],
@@ -189,15 +200,14 @@ export class ProbeContext {
     const { gate, harness, env } = this.services;
     this.takeLiveCall(spec.name, spec.config.model);
     const workerPrompt = await readFile(spec.config.workerAgent.promptFile, "utf8");
-    const runtime = await ClaudeCodeRuntime.start({
+    const conversation = spec.conversation ?? { id: sessionId, sessionIndex: 1, resume: false };
+    // The server's own start: its runtime, its backstops, and the probe's out directory as the state directory.
+    const runtime = await startRuntime({
       config: spec.config,
       gate,
       env,
-      bridgeLog: env.MIA_MCP_HTTP_LOG,
-    });
-    runtime.bridge.setHandler(async () => {
-      session.bridge_requests += 1;
-      return { behavior: "deny", message: "Mia decides every call through its gate." };
+      stateDirectory: this.dirs.out,
+      attributionDeadline: this.services.deadlines.attribution,
     });
     // A killed session's held calls are answered only once the gate sees their hooks go away, after the session
     // has ended; the record is saved once every decision is in.
@@ -206,7 +216,10 @@ export class ProbeContext {
       const eventIndex = session.events.length;
       session.notes.push(`gate asked: ${request.toolName} by ${request.agentId ?? "manager"}`);
       this.wakeWaiters();
-      const decision = await spec.decide(request, session);
+      const decision =
+        policyFor(spec.config, request.toolName) === "deny"
+          ? POLICY_DENIED
+          : await spec.decide(request, session);
       const { abandoned, ...seen } = request;
       if (session.gate_requests.length >= MAX_RECORDED) {
         session.dropped += 1;
@@ -223,10 +236,10 @@ export class ProbeContext {
     };
     try {
       const handle = runtime.sessions.open({
-        runtimeConversationId: sessionId,
-        resume: false,
-        runtimeDir: join(this.dirs.out, "runtime", sessionId),
-        sessionIndex: 1,
+        runtimeConversationId: conversation.id,
+        resume: conversation.resume,
+        runtimeDir: join(this.dirs.out, "runtime", conversation.id),
+        sessionIndex: conversation.sessionIndex,
         managerPromptFile: spec.config.agentPromptFile,
         workerPrompt,
         decide: (request) => {
@@ -257,7 +270,6 @@ export class ProbeContext {
         () => [],
       );
     } finally {
-      runtime.bridge.setHandler(null);
       await runtime.close();
     }
     process.stdout.write("\n");

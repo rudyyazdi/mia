@@ -1,15 +1,19 @@
 import type {
   GateDecision,
   GateRequest,
-  ClaudeCodeConfig,
+  RuntimeConfig,
   SessionEvent,
   SessionHandle,
   SessionResult,
 } from "@mia/agent-adapter";
 import type { FixtureState } from "@mia/controlled-mcp";
+import type { LiveRuntime } from "@mia/runtimes";
 
-/** The probe's command-line options, as commander parsed them. */
+/** What the probe was asked to run, as its entry point read it from the command line. */
 export interface ProbeOptions {
+  /** The runtime `--runtime` named, with its live defaults. */
+  runtime: LiveRuntime;
+  /** `--model`, else the runtime's live default. */
   model: string;
   out: string;
   only?: string;
@@ -27,6 +31,8 @@ export interface ProbeDeadlines {
   sessionSettled: () => AbortSignal;
   /** How long a stopped session's exit may take to be observed. */
   stopped: () => AbortSignal;
+  /** How long the runtime may take to answer a request, or to report a manager agent's call (see `RuntimeStart`). */
+  attribution: () => AbortSignal;
 }
 
 /** One manager agent's session: its events, every gate request and decision, and how it ended. */
@@ -43,8 +49,6 @@ export interface SessionRecord {
   }[];
   /** Events and gate requests past MAX_RECORDED (see context.ts), counted instead of kept. */
   dropped: number;
-  /** Permission-prompt requests the approval bridge received: none are expected, as the gate decides every call. */
-  bridge_requests: number;
   result: SessionResult | null;
   ledger_after: FixtureState | null;
   notes: string[];
@@ -63,9 +67,21 @@ export interface DrivenSession {
   send: (text: string) => boolean;
 }
 
+/**
+ * Which runtime conversation a session runs: a fresh one by default, or an earlier session's, resumed, as the server
+ * reopens a conversation after a restart.
+ */
+export interface SessionConversation {
+  id: string;
+  /** Numbers the session's files within the conversation, from 1. */
+  sessionIndex: number;
+  resume: boolean;
+}
+
 export interface SessionSpec {
   name: string;
-  config: ClaudeCodeConfig;
+  config: RuntimeConfig;
+  conversation?: SessionConversation;
   /** Run with the open session: send messages, wait on events, and close or stop it. */
   drive: (session: DrivenSession, record: SessionRecord) => Promise<void>;
   decide: GateDecider;

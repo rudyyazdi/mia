@@ -1,5 +1,6 @@
-import { Command } from "commander";
-import { runLive, type LiveOptions } from "./live.ts";
+import { Command, Option } from "commander";
+import { LIVE_RUNTIME_NAMES, liveRuntimeOf } from "@mia/runtimes";
+import { runLive } from "./live.ts";
 import { readScenarioList, type ScenarioName } from "./scenarios.ts";
 
 const program: Command = new Command()
@@ -19,11 +20,29 @@ const program: Command = new Command()
     "manager agent prompt file, relative to the repo root",
     "prompts/manager-v2.md",
   )
-  .option("--model <model>", "runtime model", "claude-sonnet-5")
+  .addOption(
+    new Option("--runtime <name>", "runtime both fixture profiles run on")
+      .choices(LIVE_RUNTIME_NAMES)
+      .default("claude"),
+  )
+  .option(
+    "--model <model>",
+    "runtime model (default: the runtime's live default, gpt-6-luna for codex)",
+  )
   .option("--out <dir>", "evidence directory (default: .mia-state/live/<timestamp>)");
 program.parse();
+const options = program.opts<{
+  repeat: string;
+  scenarios?: ScenarioName[];
+  managerPrompt: string;
+  runtime: string;
+  model?: string;
+  out?: string;
+}>();
+const runtime =
+  liveRuntimeOf(options.runtime) ?? program.error(`--runtime: unknown runtime ${options.runtime}`);
 
-runLive(program.opts<LiveOptions>(), process.env).then(
+runLive({ ...options, runtime, model: options.model ?? runtime.model }, process.env).then(
   (code) => process.exit(code),
   (error: unknown) => {
     // The whole error, not just its message: a failed close during cleanup arrives as a

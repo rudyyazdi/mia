@@ -1,8 +1,8 @@
-import type { SessionEvent } from "@mia/agent-adapter";
+import { readManagerCall, type SessionEvent } from "@mia/agent-adapter";
 import type { SessionRecord } from "./record.ts";
 
-// Pure readings of the probe's sessions: delegation, gating inside worker agents, attribution, and a background
-// worker agent outliving the manager agent's turn.
+// Pure readings of the probe's sessions: delegation, gating inside worker agents, attribution, policy denial,
+// interruption, stopping a worker agent, a background worker agent outliving the manager agent's turn, and resume.
 
 /** What one session's checks found, by name. */
 export type Checks = SessionRecord["checks"];
@@ -26,6 +26,25 @@ const gateRequestsFor = (session: SessionRecord, tool: string) =>
 
 const fixtureRequestsOf = (session: SessionRecord) =>
   session.gate_requests.filter((entry) => entry.request.toolName.startsWith("mcp__fixture__"));
+
+/** How many distinct calls of `tool` reached the fixture at all: entered it, ran, or were refused there. */
+const fixtureRunsOf = (session: SessionRecord, tool: string): number =>
+  new Set(
+    ledgerOf(session)
+      .filter((entry) => entry.tool === tool)
+      .map((entry) => entry.call_id),
+  ).size;
+
+/**
+ * No call reached the fixture that the gate had not allowed: for each tool, at most as many calls ran as the gate
+ * allowed. A call that bypassed the hook, or a call sent again after it was allowed once, would break it.
+ */
+const everyFixtureRunAllowed = (session: SessionRecord): boolean =>
+  ["read", "change", "slow", "artifact", "forbidden"].every(
+    (tool) =>
+      fixtureRunsOf(session, tool) <=
+      gateRequestsFor(session, tool).filter((entry) => entry.decision.behavior === "allow").length,
+  );
 
 /** Every fixture call the gate saw came from a worker agent the runtime reported starting. */
 const everyFixtureCallFromAWorker = (session: SessionRecord): boolean => {
@@ -57,7 +76,7 @@ const streamAttributionAgrees = (session: SessionRecord): boolean => {
   );
 };
 
-/** Checks 1, 2 and 4: a worker agent's calls reach the gate, policy holds inside it, and each call is attributed. */
+/** Hook gating inside a worker agent: its calls reach the gate, the gate's decisions hold, and each is attributed. */
 export const workerGateChecks = (session: SessionRecord): Checks => {
   const ledger = ledgerOf(session);
   return {
@@ -70,30 +89,57 @@ export const workerGateChecks = (session: SessionRecord): Checks => {
     reject_stopped_worker_change: !ledger.some(
       (entry) => entry.tool === "change" && entry.kind === "committed",
     ),
-    allow_policy_ran_worker_read:
+    allow_ran_worker_read_over_mcp:
       gateRequestsFor(session, "read").some((entry) => entry.decision.behavior === "allow") &&
       ledger.some((entry) => entry.tool === "read" && entry.kind === "returned"),
-    deny_policy_never_reached_gate: gateRequestsFor(session, "forbidden").length === 0,
-    deny_policy_never_executed: !ledger.some((entry) => entry.tool === "forbidden"),
+    every_fixture_run_allowed_by_gate: everyFixtureRunAllowed(session),
     every_fixture_call_attributed_to_a_worker: everyFixtureCallFromAWorker(session),
     stream_attribution_matches_gate: streamAttributionAgrees(session),
-    bridge_never_asked: session.bridge_requests === 0,
     worker_end_reported: session.events.some((event) => event.type === "worker_ended"),
   };
 };
 
-/** Check 3: stopping the session while a worker agent's call is held abandons it, and nothing runs. */
-export const workerInterruptChecks = (session: SessionRecord): Checks => ({
-  worker_change_was_held_then_abandoned: gateRequestsFor(session, "change").some(
-    (entry) => entry.abandoned,
-  ),
-  held_worker_change_never_ran: !ledgerOf(session).some((entry) => entry.tool === "change"),
-  session_status: session.result?.status ?? "no result",
-});
+/**
+ * A worker agent's call of a policy-denied tool: it was attempted (proposed on the stream, or asked at the gate),
+ * every gate decision on it was a denial, and it never ran.
+ */
+export const workerDenyChecks = (session: SessionRecord): Checks => {
+  const asked = gateRequestsFor(session, "forbidden");
+  return {
+    worker_attempted_denied_call:
+      asked.length > 0 ||
+      proposalsOf(session).some((proposal) => proposal.toolIdentity === "mcp__fixture__forbidden"),
+    denied_by: asked.length > 0 ? "gate" : "runtime rule (never reached the gate)",
+    gate_denied_every_ask: asked.every((entry) => entry.decision.behavior === "deny"),
+    denied_call_never_ran: fixtureRunsOf(session, "forbidden") === 0,
+    every_fixture_call_attributed_to_a_worker:
+      asked.length === 0 || asked.every((entry) => entry.request.agentId !== null),
+  };
+};
 
 /**
- * Check 5: a background worker agent outlives the manager agent's turn. `observed` holds how many events the session
- * had recorded when the second message was answered and when the held call was released (0: not answered).
+ * Stopping the session while one worker agent's call is held at the gate and another's is in flight at the fixture:
+ * the held call is abandoned and never runs, and neither call is asked or sent a second time.
+ */
+export const workerInterruptChecks = (session: SessionRecord): Checks => {
+  const ledger = ledgerOf(session);
+  return {
+    held_change_abandoned: gateRequestsFor(session, "change").some((entry) => entry.abandoned),
+    held_change_never_ran: fixtureRunsOf(session, "change") === 0,
+    held_change_asked_once: gateRequestsFor(session, "change").length === 1,
+    in_flight_slow_entered_once:
+      ledger.filter((entry) => entry.tool === "slow" && entry.kind === "entered").length === 1,
+    in_flight_slow_asked_once: gateRequestsFor(session, "slow").length === 1,
+    in_flight_slow_never_committed: !ledger.some(
+      (entry) => entry.tool === "slow" && entry.kind === "committed",
+    ),
+    session_status: session.result?.status ?? "no result",
+  };
+};
+
+/**
+ * A background worker agent outlives the manager agent's turn. `observed` holds how many events the session had
+ * recorded when the second message was answered and when the held call was released (0: not answered).
  */
 export const workerBackgroundChecks = (
   session: SessionRecord,
@@ -130,13 +176,37 @@ export const workerStopChecks = (
       event.type === "worker_ended",
   );
   return {
-    task_stop_passed_gate_as_manager_call: session.gate_requests.some(
-      (entry) => entry.request.toolName === "TaskStop" && entry.request.agentId === null,
+    stop_passed_gate_as_manager_call: session.gate_requests.some(
+      (entry) =>
+        entry.request.agentId === null &&
+        readManagerCall(entry.request.toolName, entry.request.input).kind === "stop" &&
+        entry.decision.behavior === "allow",
     ),
-    worker_end_status: ended?.runtimeStatus ?? "no end reported",
+    worker_end: ended ? `${ended.end} (runtime: ${ended.runtimeStatus})` : "no end reported",
+    worker_reported_stopped: ended?.end === "stopped",
     in_flight_call_left_running_after_stop: observed.pendingAfterStop,
     in_flight_call_cancelled: ledger.some(
       (entry) => entry.tool === "slow" && entry.kind === "cancelled",
     ),
+    in_flight_call_never_committed: !ledger.some(
+      (entry) => entry.tool === "slow" && entry.kind === "committed",
+    ),
   };
 };
+
+/** The manager agent's own text in a session: its streamed text, else its turns' closing text. */
+export const managerTextOf = (session: SessionRecord): string => {
+  const streamed = session.events
+    .map((event) => (event.type === "text_delta" && event.parentCallId === null ? event.text : ""))
+    .join("");
+  if (streamed !== "") return streamed;
+  return session.events
+    .map((event) => (event.type === "turn_result" ? (event.summary.finalText ?? "") : ""))
+    .join("\n");
+};
+
+/** The resumed session, on a fresh runtime, answered with the code word the killed session was told. */
+export const resumeChecks = (after: SessionRecord, word: string): Checks => ({
+  resumed_session_answered: after.events.some((event) => event.type === "turn_result"),
+  resumed_session_knew_the_word: managerTextOf(after).includes(word),
+});

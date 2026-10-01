@@ -10,13 +10,12 @@ const evidenceFor = (
   scenario,
   profile: "fixture-test",
   conversation_id: "conversation",
-  task_ids: ["task"],
+  tasks: [],
+  replies: [],
   decisions: [],
   ledger_after: { counter: 0, commits: [], returned: [], entered: [], kinds: {} },
   events: [],
-  transcript: [],
   notes: [],
-  final_status: ["failed"],
   live: true,
   ...overrides,
 });
@@ -24,55 +23,11 @@ const evidenceFor = (
 const judge = (scenario: ScenarioName, evidence: Record<string, unknown>) =>
   assertScenario(JSON.stringify(evidence), { vars: { scenario } });
 
-const reconnectDecision = {
-  approval_id: "approval",
-  tool: "mcp__fixture__change",
-  decision: "reject",
-  ledger_commits_at_request: 0,
-};
-
 describe("scenario assertion", () => {
-  it("passes silence-disconnect only when the reject after reconnect was accepted", () => {
-    const decided = (ack: Record<string, unknown>) =>
-      evidenceFor("silence-disconnect", {
-        decisions: [{ ...reconnectDecision, ack: { ...ack, disposition: "accepted" } }],
-      });
-    expect(judge("silence-disconnect", decided({ after_reconnect: true })).pass).toBe(true);
-    expect(judge("silence-disconnect", decided({ after_reconnect: false })).pass).toBe(false);
-    const refused = evidenceFor("silence-disconnect", {
-      decisions: [
-        {
-          ...reconnectDecision,
-          ack: { disposition: "rejected", code: "invalid_state", after_reconnect: true },
-        },
-      ],
-    });
-    expect(judge("silence-disconnect", refused)).toMatchObject({
-      pass: false,
-      reason: "pending approval was not retained/decidable after reconnect",
-    });
-  });
-
-  it("refuses a decision or ack outside the declared vocabularies", () => {
-    const refusedShapes = [
-      { ...reconnectDecision, decision: "reject-after-reconnect:accepted" },
-      { ...reconnectDecision, ack: { disposition: "acepted", after_reconnect: true } },
-      { ...reconnectDecision, ack: { disposition: "rejected", after_reconnect: true } },
-      {
-        ...reconnectDecision,
-        ack: { disposition: "rejected", code: "no_such_code", after_reconnect: true },
-      },
-    ];
-    for (const decision of refusedShapes)
-      expect(
-        judge("silence-disconnect", evidenceFor("silence-disconnect", { decisions: [decision] }))
-          .reason,
-      ).toMatch(/^provider output does not match the evidence shape/);
-  });
-
   it("reads ledger kinds by their declared names and refuses an undeclared one", () => {
-    const ledger = (kinds: Record<string, number>) =>
-      evidenceFor("cancellable", {
+    const interrupted = (kinds: Record<string, number>) =>
+      evidenceFor("interrupt-task", {
+        tasks: [{ task_id: "task", status: "interrupted" }],
         ledger_after: {
           counter: 0,
           commits: [],
@@ -81,30 +36,31 @@ describe("scenario assertion", () => {
           kinds,
         },
         events: [{ type: "interruption_outcome", sequence: 1, payload: {} }],
-        final_status: ["interrupted"],
       });
-    expect(judge("cancellable", ledger({ entered: 1, cancelled: 1 })).pass).toBe(true);
-    expect(judge("cancellable", ledger({ entered: 1 })).reason).toBe(
+    expect(judge("interrupt-task", interrupted({ entered: 1, cancelled: 1 })).pass).toBe(true);
+    expect(judge("interrupt-task", interrupted({ entered: 1 })).reason).toBe(
       "slow action was not cancelled in the ledger",
     );
-    expect(judge("cancellable", ledger({ entered: 1, canceled: 1 })).reason).toMatch(
+    expect(judge("interrupt-task", interrupted({ entered: 1, canceled: 1 })).reason).toMatch(
       /^provider output does not match the evidence shape/,
     );
   });
 
-  it("fails a decision-driven scenario whose decision the server refused or never answered", () => {
+  it("fails a scenario whose decision the server refused or never answered, or whose task never ended", () => {
     const approveReject = (second: Record<string, unknown>) =>
       evidenceFor("approve-reject", {
         decisions: [
           {
             approval_id: "first",
+            task_id: "task",
             tool: "mcp__fixture__change",
             decision: "approve",
-            ack: { disposition: "accepted", after_reconnect: false },
+            ack: { disposition: "accepted" },
             ledger_commits_at_request: 0,
           },
           {
             approval_id: "second",
+            task_id: "task",
             tool: "mcp__fixture__change",
             decision: "reject",
             ledger_commits_at_request: 1,
@@ -119,16 +75,22 @@ describe("scenario assertion", () => {
           kinds: { committed: 1 },
         },
       });
-    const accepted = { ack: { disposition: "accepted", after_reconnect: false } };
-    const refused = {
-      ack: { disposition: "rejected", code: "invalid_state", after_reconnect: false },
-    };
+    const accepted = { ack: { disposition: "accepted" } };
     expect(judge("approve-reject", approveReject(accepted)).pass).toBe(true);
-    expect(judge("approve-reject", approveReject(refused)).reason).toBe(
-      "decisions not accepted: reject second rejected:invalid_state",
-    );
+    expect(
+      judge(
+        "approve-reject",
+        approveReject({ ack: { disposition: "rejected", code: "invalid_state" } }),
+      ).reason,
+    ).toBe("decisions not accepted: reject second rejected:invalid_state");
     expect(judge("approve-reject", approveReject({})).reason).toBe(
       "decisions not accepted: reject second unanswered",
     );
+    expect(
+      judge("approve-reject", {
+        ...approveReject(accepted),
+        tasks: [{ task_id: "task", status: "running" }],
+      }).reason,
+    ).toBe("tasks never ended: task");
   });
 });

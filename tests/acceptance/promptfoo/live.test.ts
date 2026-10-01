@@ -16,7 +16,7 @@ describe("runLive", () => {
 
   it("rejects an aborted signal before it creates evidence or starts anything", async () => {
     const out = join(parent, "evidence");
-    const options = { repeat: "1", agentPrompt: "prompts/agent-v1.md", model: "none", out };
+    const options = { repeat: "1", managerPrompt: "prompts/manager-v1.md", model: "none", out };
     await expect(runLive(options, {}, AbortSignal.abort())).rejects.toMatchObject({
       name: "AbortError",
     });

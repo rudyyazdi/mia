@@ -52,7 +52,9 @@ const startWork = async (debugMode: boolean, bodyLog: "configured" | "unconfigur
     bodyLog === "unconfigured"
       ? {}
       : {
-          mcpServers: { fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: bodyLogFile } },
+          mcpServers: {
+            fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: bodyLogFile },
+          },
         },
     { debugMode },
   );

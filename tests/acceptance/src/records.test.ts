@@ -10,14 +10,7 @@ import {
   verifyExportSync,
 } from "@mia/records";
 import type { MiaClient } from "@mia/text-client";
-import {
-  ackResult,
-  must,
-  turnWithWorker,
-  useScripted,
-  type Scripted,
-  type TestServer,
-} from "./harness.ts";
+import { must, turnWithWorker, useScripted, type Scripted, type TestServer } from "./harness.ts";
 
 let scripted: Scripted;
 let ts: TestServer;

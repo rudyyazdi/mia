@@ -214,30 +214,28 @@ export class ProbeContext {
       return decision;
     };
     try {
-      const handle = new ClaudeCodeSessions(spec.config, { gate, bridge }, this.services.env).open(
-        {
-          runtimeConversationId: sessionId,
-          resume: false,
-          runtimeDir: join(this.dirs.out, "runtime", sessionId),
-          sessionIndex: 1,
-          managerPromptFile: spec.config.agentPromptFile,
-          workerPrompt,
-          decide: (request) => {
-            const decided = decide(request);
-            deciding.add(decided);
-            void decided.finally(() => deciding.delete(decided)).catch(() => undefined);
-            return decided;
-          },
-          onEvent: async (event) => {
-            session.events.push(event);
-            this.wakeWaiters();
-            if (event.type === "text_delta" && event.parentCallId === null)
-              process.stdout.write(event.text);
-            else if (event.type !== "assistant_message" && event.type !== "text_delta")
-              log(event.type, "runtimeTaskId" in event ? event.runtimeTaskId : "");
-          },
+      const handle = new ClaudeCodeSessions(spec.config, { gate, bridge }, this.services.env).open({
+        runtimeConversationId: sessionId,
+        resume: false,
+        runtimeDir: join(this.dirs.out, "runtime", sessionId),
+        sessionIndex: 1,
+        managerPromptFile: spec.config.agentPromptFile,
+        workerPrompt,
+        decide: (request) => {
+          const decided = decide(request);
+          deciding.add(decided);
+          void decided.finally(() => deciding.delete(decided)).catch(() => undefined);
+          return decided;
         },
-      );
+        onEvent: async (event) => {
+          session.events.push(event);
+          this.wakeWaiters();
+          if (event.type === "text_delta" && event.parentCallId === null)
+            process.stdout.write(event.text);
+          else if (event.type !== "assistant_message" && event.type !== "text_delta")
+            log(event.type, "runtimeTaskId" in event ? event.runtimeTaskId : "");
+        },
+      });
       try {
         await spec.drive({ handle, send: (text) => handle.send(text, randomUUID()) }, session);
       } finally {

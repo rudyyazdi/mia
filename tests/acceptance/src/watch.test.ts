@@ -15,9 +15,7 @@ import {
 } from "@mia/records";
 import type { MiaClient } from "@mia/text-client";
 import {
-  ackResult,
   must,
-  mustString,
   startTestServer,
   turnWithWorker,
   useScripted,
@@ -476,8 +474,13 @@ describe("mia debug watch", () => {
       { text: "read it", runtimeTaskId: "a1" },
     );
     expect(
-      (await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a1" }))
-        .behavior,
+      (
+        await session.ask({
+          toolName: "mcp__fixture__read",
+          toolUseId: "toolu_read",
+          agentId: "a1",
+        })
+      ).behavior,
     ).toBe("allow");
     writeBodyLog(bodyLog, [
       { direction: "request", body: { jsonrpc: "2.0", id: 3, method: "tools/call" } },
@@ -514,8 +517,13 @@ describe("mia debug watch", () => {
 
     // An allowed call runs, and its result lands under it.
     expect(
-      (await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a1" }))
-        .behavior,
+      (
+        await session.ask({
+          toolName: "mcp__fixture__read",
+          toolUseId: "toolu_read",
+          agentId: "a1",
+        })
+      ).behavior,
     ).toBe("allow");
     await session.toolResult({
       runtimeCallId: "toolu_read",

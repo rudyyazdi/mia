@@ -19,9 +19,17 @@ const planIn = (
       effort: "medium",
       workingDirectory: join(dir, "work"),
       mcpServers: {
-        fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: join(dir, "bodies.jsonl") },
+        fixture: {
+          type: "http",
+          url: "http://127.0.0.1:1/mcp",
+          bodyLog: join(dir, "bodies.jsonl"),
+        },
       },
-      toolPolicy: { mcp__fixture__slow: "ask", mcp__fixture__read: "allow", mcp__fixture__forbidden: "deny" },
+      toolPolicy: {
+        mcp__fixture__slow: "ask",
+        mcp__fixture__read: "allow",
+        mcp__fixture__forbidden: "deny",
+      },
       agentPromptFile: join(dir, "manager.md"),
       outputDirectories: [],
       env: {},

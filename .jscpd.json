@@ -1,15 +1,9 @@
 {
-  "format": [
-    "markdown",
-    "typescript",
-    "javascript"
-  ],
+  "format": ["markdown", "typescript", "javascript"],
   "minLines": 4,
   "minTokens": 48,
   "threshold": 0,
-  "reporters": [
-    "console"
-  ],
+  "reporters": ["console"],
   "gitignore": true,
   "ignore": [
     "**/node_modules/**",

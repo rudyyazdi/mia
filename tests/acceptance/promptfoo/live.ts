@@ -1,7 +1,7 @@
 /**
  * Live-lane runner: starts the controlled fixture and both server profiles, runs the promptfoo eval with N repeats,
  * enriches every result with catalog evidence (reported model/effort, runtime version, export verification) and
- * writes the live rows of the acceptance record. Every turn counts against the shared live-call budget.
+ * writes the results to the evidence directory. Every message counts against the shared live-call budget.
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -17,8 +17,10 @@ import {
 } from "@mia/records";
 import { loadProfileSync } from "@mia/agent-adapter";
 import {
+  ATTRIBUTION_WAIT_MS,
   EVIDENCE_READ_TIMEOUT_MS,
   SHUTDOWN_TURN_WAIT_MS,
+  STOP_WAIT_MS,
   startServer,
   type MiaServer,
 } from "@mia/server";
@@ -30,8 +32,8 @@ export interface LiveOptions {
   repeat: string;
   /** The scenarios to run; all of them when absent. */
   scenarios?: ScenarioName[];
-  /** The agent prompt file, relative to the repo root. */
-  agentPrompt: string;
+  /** The manager agent's prompt file, relative to the repo root. */
+  managerPrompt: string;
   model: string;
   /** The evidence directory; `.mia-state/live/<timestamp>` when absent. */
   out?: string;
@@ -77,7 +79,7 @@ interface LiveRow {
   ledger: unknown;
   decisions: unknown;
   notes: unknown;
-  final_status: unknown;
+  tasks: unknown;
   runtime: Partial<RuntimeEvidence>;
   export: Record<string, unknown> | null;
 }
@@ -95,13 +97,13 @@ const writeLiveResults = ({
 }: {
   rows: LiveRow[];
   summary: Record<string, unknown>;
-  /** Run-level failures that no row shows; listed so the committed record cannot look clean. */
+  /** Run-level failures that no row shows; listed so the results cannot look clean. */
   problems: string[];
   promptVersion: string;
   outDirAbs: string;
 }): void => {
   writeFileSync(join(outDirAbs, "acceptance-live.json"), JSON.stringify(summary, null, 2));
-  // Committed markdown must not carry personal absolute paths.
+  // Markdown that may be posted to a pull request must not carry personal absolute paths.
   const relativeOutDir = outDirAbs.startsWith(REPO_ROOT)
     ? outDirAbs.slice(REPO_ROOT.length + 1)
     : outDirAbs;
@@ -123,17 +125,13 @@ const writeLiveResults = ({
       return `| ${row.scenario} | ${row.repeat} | ${row.pass ? "pass" : "FAIL"} | ${row.conversation_id ?? "-"} | ${row.runtime.reported_model?.join(",") ?? "-"} | ${row.runtime.reported_effort?.join(",") ?? "-"} | ${row.runtime.runtime_version ?? "-"} | ${commitTools || "none"} | ${String(row.reason).replace(/\|/g, "/")} |`;
     }),
   ];
-  mkdirSync(join(REPO_ROOT, "docs/D1/acceptance"), { recursive: true });
-  writeFileSync(
-    join(REPO_ROOT, "docs/D1/acceptance", `live-results-${promptVersion}.md`),
-    md.join("\n") + "\n",
-  );
+  writeFileSync(join(outDirAbs, "live-results.md"), md.join("\n") + "\n");
 };
 
 /** What starting one server profile needs from the run. */
 interface ProfileRun {
   outDir: string;
-  agentPromptPath: string;
+  managerPromptPath: string;
   model: string;
   /** The environment the profile's `${ENV}` placeholders resolve against. */
   profileEnv: NodeJS.ProcessEnv;
@@ -155,7 +153,7 @@ const startProfile = async (name: string, index: number, run: ProfileRun): Promi
     secretFile: join(run.outDir, `state-${index}`, "client-secret"),
   };
   profile.runtime.workingDirectory = join(run.outDir, `work-${index}`);
-  profile.runtime.agentPromptFile = run.agentPromptPath;
+  profile.runtime.agentPromptFile = run.managerPromptPath;
   profile.runtime.model = run.model;
   const logs: string[] = [];
   // Registered before the server starts, so a start that fails still leaves the lines explaining
@@ -168,6 +166,8 @@ const startProfile = async (name: string, index: number, run: ProfileRun): Promi
     env: run.runtimeEnv,
     log: (message) => logs.push(`${new Date().toISOString()} ${message}`),
     evidenceReadDeadline: () => AbortSignal.timeout(EVIDENCE_READ_TIMEOUT_MS),
+    stopDeadline: () => AbortSignal.timeout(STOP_WAIT_MS),
+    attributionDeadline: () => AbortSignal.timeout(ATTRIBUTION_WAIT_MS),
   });
   run.cleanup.defer(() => server.close(AbortSignal.timeout(SHUTDOWN_TURN_WAIT_MS)));
   log(`server ${name} at ${server.gateway.url}`);
@@ -362,7 +362,7 @@ const readRows = ({
       ledger: evidence.ledger_after ?? null,
       decisions: evidence.decisions ?? null,
       notes: evidence.notes ?? null,
-      final_status: evidence.final_status ?? null,
+      tasks: evidence.tasks ?? null,
       runtime,
       export: exportResult,
     });
@@ -397,12 +397,12 @@ export const runLive = async (
     MIA_FIXTURE_DIR: fixtureDir,
     XDG_STATE_HOME: env.XDG_STATE_HOME ?? join(env.HOME ?? ".", ".local", "state"),
   };
-  const agentPromptPath = resolve(REPO_ROOT, options.agentPrompt);
-  const promptVersion = basename(agentPromptPath, ".md");
+  const managerPromptPath = resolve(REPO_ROOT, options.managerPrompt);
+  const promptVersion = basename(managerPromptPath, ".md");
 
   const run: ProfileRun = {
     outDir,
-    agentPromptPath,
+    managerPromptPath,
     model: options.model,
     profileEnv: fixtureEnv,
     // The runtime inherits the runner's own environment, not the promptfoo one built here.
@@ -420,7 +420,7 @@ export const runLive = async (
     MIA_SECRET_FILE_2: server2.profile.server.secretFile,
     MIA_FIXTURE_HARNESS_URL: fixture.harnessUrl,
     MIA_REPO_ROOT: REPO_ROOT,
-    MIA_AGENT_PROMPT_VERSION: promptVersion,
+    MIA_MANAGER_PROMPT_VERSION: promptVersion,
     PROMPTFOO_DISABLE_TELEMETRY: "1",
     PROMPTFOO_DISABLE_UPDATE: "1",
     PROMPTFOO_DISABLE_SHARING: "1",
@@ -459,9 +459,7 @@ export const runLive = async (
     promptVersion,
     outDirAbs: outDir,
   });
-  log(
-    `wrote docs/D1/acceptance/live-results-${promptVersion}.md and ${join(outDir, "acceptance-live.json")}`,
-  );
+  log(`wrote ${join(outDir, "live-results.md")} and ${join(outDir, "acceptance-live.json")}`);
   const clean = unreadResults.length === 0 && missingScenarios.length === 0;
   return exitCode === 0 && clean && rows.every((row) => row.pass) ? 0 : 1;
 };

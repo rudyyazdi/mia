@@ -354,15 +354,17 @@ const messageSubmitted = (state: ConversationState, event: MessageEvent, now: Da
   return draft.accepted();
 };
 
+/** The queued message the session was handed under `runtimeMessageId`, if it is still queued. */
+const queuedInput = (state: ConversationState, runtimeMessageId: string) =>
+  state.queuedInputs.find((input) => input.runtimeMessageId === runtimeMessageId);
+
 /** The session did not take a recorded message (it had stopped reading): it leaves the queue, recorded as lost. */
 const messageUndelivered = (
   state: ConversationState,
   event: MessageUndeliveredEvent,
   now: Date,
 ): Decided => {
-  const queued = state.queuedInputs.find(
-    (input) => input.runtimeMessageId === event.runtimeMessageId,
-  );
+  const queued = queuedInput(state, event.runtimeMessageId);
   if (!queued) return rejected({ kind: "not_queued" });
   const draft = draftFor(state, event, now);
   draft.record(
@@ -461,9 +463,7 @@ const openTurn = (
 
 /** The runtime replayed a message as a turn took it: it leaves the queue, and a just-begun turn is the user's. */
 const inputTaken = (state: ConversationState, event: InputTakenEvent, now: Date): Decided => {
-  const queued = state.queuedInputs.find(
-    (input) => input.runtimeMessageId === event.runtimeMessageId,
-  );
+  const queued = queuedInput(state, event.runtimeMessageId);
   if (!queued) return rejected({ kind: "not_queued" });
   const draft = draftFor(state, event, now);
   openTurn(draft, { kind: "message", eventId: queued.eventId });

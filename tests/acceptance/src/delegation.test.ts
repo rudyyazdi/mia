@@ -56,7 +56,11 @@ describe("D2: a manager agent that never blocks", () => {
     await session.endTurn();
 
     expect(
-      await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a_read" }),
+      await session.ask({
+        toolName: "mcp__fixture__read",
+        toolUseId: "toolu_read",
+        agentId: "a_read",
+      }),
     ).toEqual({ behavior: "allow" });
     expect(
       await session.ask({ toolName: EXCLUSIVE, toolUseId: "toolu_slow", agentId: "a_slow" }),
@@ -111,7 +115,11 @@ describe("D2: a manager agent that never blocks", () => {
     ).toEqual({ behavior: "allow" });
     await client.waitFor("interruption_requested");
     expect(
-      await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_after", agentId: "a_slow" }),
+      await session.ask({
+        toolName: "mcp__fixture__read",
+        toolUseId: "toolu_after",
+        agentId: "a_slow",
+      }),
     ).toMatchObject({ behavior: "deny" });
     ackResult(await client.interruptAll());
     const outcome = await client.waitFor("interruption_outcome");
@@ -150,7 +158,11 @@ describe("D2: a manager agent that never blocks", () => {
     const session = await turnWithWorker(scripted, { text: "go", runtimeTaskId: "a1" });
     server.expireAttributionWaits();
     expect(
-      await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_x", agentId: "a_nobody" }),
+      await session.ask({
+        toolName: "mcp__fixture__read",
+        toolUseId: "toolu_x",
+        agentId: "a_nobody",
+      }),
     ).toMatchObject({ behavior: "deny" });
     expect(
       await session.ask({ toolName: "Agent", toolUseId: "toolu_nested", agentId: "a1" }),

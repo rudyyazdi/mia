@@ -9,7 +9,7 @@ const runtime = (mcpServers: RuntimeConfig["mcpServers"]): RuntimeConfig => ({
   effort: "low",
   workingDirectory: "/work",
   mcpServers,
-  toolPolicy: { mcp__fixture__read: "allow" },
+  toolPolicy: { mcp__fixture__change: "ask" },
   agentPromptFile: "/prompt.md",
   outputDirectories: [],
   env: {},
@@ -60,7 +60,7 @@ describe("toolContracts", () => {
     }
   },
   "toolPolicy": {
-    "mcp__fixture__read": "allow"
+    "mcp__fixture__change": "ask"
   },
   "exclusiveTools": [],
   "builtinTools": [

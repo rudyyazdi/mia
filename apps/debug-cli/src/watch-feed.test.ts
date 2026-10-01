@@ -34,7 +34,10 @@ const conversation = (): WatchRows =>
   });
 
 /** The fixture's calls go to the fixture server, which writes a body log unless a test says otherwise. */
-const FIXTURE_SERVERS: BodyLogServers = { status: "known", servers: new Map([["fixture", "body_log"]]) };
+const FIXTURE_SERVERS: BodyLogServers = {
+  status: "known",
+  servers: new Map([["fixture", "body_log"]]),
+};
 
 /** One poll, its messages read out as the server sends them. */
 const poll = (rows: WatchRows, sent: Sent, servers: BodyLogServers = FIXTURE_SERVERS) => {

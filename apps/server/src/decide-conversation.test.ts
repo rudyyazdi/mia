@@ -283,7 +283,10 @@ describe("the manager agent's calls", () => {
   });
 
   it("closes a stopped task's gate once, however many times it is stopped", () => {
-    const asked = after(running("a1"), gate({ policy: "ask", toolIdentity: "mcp__fixture__change" }));
+    const asked = after(
+      running("a1"),
+      gate({ policy: "ask", toolIdentity: "mcp__fixture__change" }),
+    );
     const byClient = accepted(asked, {
       kind: "stop_task",
       ...drawn,
@@ -349,7 +352,10 @@ describe("worker agents' calls", () => {
 
 describe("approvals", () => {
   const pending = () => {
-    const asked = after(running("a1"), gate({ policy: "ask", toolIdentity: "mcp__fixture__change" }));
+    const asked = after(
+      running("a1"),
+      gate({ policy: "ask", toolIdentity: "mcp__fixture__change" }),
+    );
     const task = taskOf(asked, "a1");
     return { asked, task, approvalId: [...task.pendingApprovals.keys()][0] ?? "" };
   };
@@ -394,7 +400,11 @@ describe("stops and ends", () => {
       for (let index = 0; index < 2; index += 1)
         state = after(
           state,
-          gate({ agentId: task.runtimeTaskId, policy: "ask", toolIdentity: "mcp__fixture__change" }),
+          gate({
+            agentId: task.runtimeTaskId,
+            policy: "ask",
+            toolIdentity: "mcp__fixture__change",
+          }),
         );
     const stop = accepted(state, { kind: "stop_all", ...drawn, by: "client" });
     expect([...stop.next.tasks.values()].every((task) => !task.gateOpen)).toBe(true);

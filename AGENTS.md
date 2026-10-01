@@ -47,6 +47,8 @@ This file contains the guidelines for contributing to this codebase. It holds no
 ## Documentation
 
 - Every issue, guide or fact has one home among code, docs, this file, commit messages, PR descriptions and issue descriptions; everywhere else links to it. A lint rule's configuration and message may restate the rule here that it enforces.
+- Code, tests, file names and docs describe only the current system; deliverable numbers appear only in docs/PLAN.md, issues and PRs.
+- Git is the history: never keep an old version of a file beside the current one.
 
 ## Agents
 

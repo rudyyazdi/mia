@@ -10,6 +10,7 @@ const session = (fields: Partial<SessionRecord>): SessionRecord => ({
   session_id: "s",
   events: [],
   gate_requests: [],
+  dropped: 0,
   bridge_requests: 0,
   result: null,
   ledger_after: null,

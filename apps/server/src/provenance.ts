@@ -51,8 +51,7 @@ export interface ConversationFile {
 /** The files a conversation's provenance retains, read by `readConversationFiles`. */
 export interface ConversationFiles {
   agentPrompt: ConversationFile;
-  /** The worker agent's prompt, or null when it could not be read. */
-  workerPrompt: ConversationFile | null;
+  workerPrompt: ConversationFile;
   architecture: ConversationFile;
 }
 
@@ -69,8 +68,8 @@ const conversationFile = (path: string, read: RuntimeFileRead): ConversationFile
 };
 
 /**
- * Reads the profile's agent prompt and architecture document before the transaction that records a conversation
- * opens. The read is bounded like a turn-end read: it opens without blocking, refuses anything but a regular file,
+ * Reads the profile's manager and worker prompts and architecture document before the transaction that records a conversation
+ * opens. The read is bounded like a session end's evidence read: it opens without blocking, refuses anything but a regular file,
  * refuses a file over `MAX_CONVERSATION_FILE_BYTES`, and is abandoned once `signal` aborts. Only a file that does
  * not exist is recorded as unavailable; any other failure throws, and no conversation starts, because a
  * misconfigured path should not silently drop provenance.
@@ -83,19 +82,16 @@ export const readConversationFiles = async (input: {
   const { profile, read, signal } = input;
   const options = { signal, maxBytes: MAX_CONVERSATION_FILE_BYTES };
   const promptPath = profile.runtime.agentPromptFile;
-  const workerPath = profile.runtime.workerAgent?.promptFile ?? null;
+  const workerPath = profile.runtime.workerAgent.promptFile;
   const architecturePath = profile.architectureDocument;
   const [agentPrompt, workerPrompt, architecture] = await Promise.all([
     read(promptPath, options),
-    workerPath === null ? null : read(workerPath, options),
+    read(workerPath, options),
     read(architecturePath, options),
   ]);
   return {
     agentPrompt: conversationFile(promptPath, agentPrompt),
-    workerPrompt:
-      workerPath === null || workerPrompt === null
-        ? null
-        : conversationFile(workerPath, workerPrompt),
+    workerPrompt: conversationFile(workerPath, workerPrompt),
     architecture: conversationFile(architecturePath, architecture),
   };
 };
@@ -173,17 +169,16 @@ export const planConversationProvenance = (input: {
   );
   // Mia-owned worker-agent instructions, handed to the runtime as the worker agent's definition.
   const worker = files.workerPrompt;
-  if (worker !== null)
-    items.push(
-      worker.bytes === null
-        ? unavailable("worker_prompt", `worker prompt file missing: ${worker.path}`)
-        : retained("worker_prompt", {
-            bytes: worker.bytes,
-            version: basename(worker.path).replace(/\.md$/, ""),
-            mime: "text/markdown",
-            logicalName: basename(worker.path),
-          }),
-    );
+  items.push(
+    worker.bytes === null
+      ? unavailable("worker_prompt", `worker prompt file missing: ${worker.path}`)
+      : retained("worker_prompt", {
+          bytes: worker.bytes,
+          version: basename(worker.path).replace(/\.md$/, ""),
+          mime: "text/markdown",
+          logicalName: basename(worker.path),
+        }),
+  );
   // Exposed runtime instructions: the runtime does not expose its full system prompt over the stream.
   items.push(
     unavailable(

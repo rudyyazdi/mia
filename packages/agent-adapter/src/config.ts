@@ -60,7 +60,7 @@ export const RuntimeConfigSchema = z
     mcpServers: z.record(z.string().regex(/^[A-Za-z0-9_-]+$/), McpServerConfigSchema),
     /**
      * Mia policy per fully qualified tool identity (mcp__<server>__<tool>).
-     * allow: permitted without prompting, still subject to the action gate.
+     * allow: permitted without prompting, still refused once its task is being stopped.
      * ask: requires an explicit per-call user decision.
      * deny: rejected before any prompt.
      * Tools not listed are denied with a visible error.

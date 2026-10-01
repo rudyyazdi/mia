@@ -28,7 +28,7 @@ const listenOnFreePort = async (): Promise<{ server: Server; port: number }> => 
 const closeServer = (server: Server): Promise<void> =>
   new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
 
-/** A turn wait that never aborts: the test itself decides when the turn ends. */
+/** A shutdown wait that never aborts: the test itself decides when the session ends. */
 const unbounded = (): AbortSignal => new AbortController().signal;
 
 describe("server lifecycle", () => {

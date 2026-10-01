@@ -105,8 +105,7 @@ export const probeStaticCapabilitiesSync = (
 
 /**
  * Creates the directories and files a session's invocation refers to (see `prepareSession`), owner-only. It
- * settles only after every write has: a conversation's turns share these file names, and a turn does not end before
- * its writes do, so no write of an earlier turn can land over a later turn's settings.
+ * settles only after every write has, so the runtime never starts on a partly written file.
  */
 export const writeLaunchFiles = async (setup: LaunchSetup): Promise<void> => {
   for (const directory of setup.directories)
@@ -119,7 +118,7 @@ const HookEvidenceRecordSchema = z.record(z.string(), z.unknown());
 
 export interface HookEvidence {
   records: Record<string, unknown>[];
-  /** Lines that were not a JSON object, such as the truncated last line of a turn killed mid-write. */
+  /** Lines that were not a JSON object, such as the truncated last line of a session killed mid-write. */
   malformedLines: number;
   /** Why the file could not be read for a reason other than being absent, in which case there are no records; else null. */
   readError: string | null;
@@ -135,7 +134,7 @@ const parseHookLine = (line: string): Record<string, unknown> | null => {
 };
 
 /**
- * A file read while the server serves: one the runtime writes during a turn, read after it ends, or a file a
+ * A file read while the server serves: one the runtime writes during a session, read after it ends, or a file a
  * conversation start retains. `absent` when nothing exists at the path.
  */
 export type RuntimeFileRead =
@@ -278,24 +277,24 @@ export const boundedRuntimeFileReader = ({
 /**
  * Abandoned reads the process lets stay blocked before it refuses to start another. The libuv worker pool (4
  * threads by default) is per process, and every async fs call and `dns.lookup` queues behind it, so this keeps
- * threads free when a turn's two concurrent evidence reads (transcript and hook evidence) are the last to stick.
- * A conversation start's two reads (agent prompt and architecture document) share the budget, because the pool is
- * shared: a stale mount under either path can cost later turns their evidence until those reads return. So does a
- * debug-mode read of a body log at a tool result or at turn end.
+ * threads free when a session end's two concurrent evidence reads (transcript and hook evidence) are the last to
+ * stick. A conversation start's reads (prompts and architecture document) share the budget, because the pool is
+ * shared: a stale mount under any of those paths can cost later sessions their evidence until those reads return. So
+ * does a debug-mode read of a body log at a tool result or at session end.
  */
 const MAX_STUCK_READS = 2;
 
 /**
  * Reads a runtime-written file, or a file a conversation start retains, without throwing, because a throw after
- * the turn would keep it from being recorded as finished. Only a missing file is absent; anything that is not a regular file (a directory, a
- * FIFO) and any other failure (EACCES, ENOTDIR) is reported. Asynchronous because the server reads at turn end
+ * the session would keep its end from being recorded. Only a missing file is absent; anything that is not a regular file (a directory, a
+ * FIFO) and any other failure (EACCES, ENOTDIR) is reported. Asynchronous because the server reads at session end
  * while it serves other connections.
  *
  * A read is unreadable the moment `signal` aborts, even if the `open()` or `read()` under it is blocked (a
  * regular file on a stale mount): `readFile`'s own signal is only checked between those calls. Nothing avoids
  * that blocked call, so each such abandoned read keeps its descriptor, and a libuv worker thread, until the
  * kernel returns, and then closes the descriptor. While `MAX_STUCK_READS` of them are still blocked, every read
- * is unreadable without starting: a hung mount then costs later turns their evidence, even on a healthy path,
+ * is unreadable without starting: a hung mount then costs later sessions their evidence, even on a healthy path,
  * instead of stalling the whole process.
  */
 export const readRuntimeFile: RuntimeFileReader = boundedRuntimeFileReader({
@@ -303,7 +302,7 @@ export const readRuntimeFile: RuntimeFileReader = boundedRuntimeFileReader({
   maxStuckReads: MAX_STUCK_READS,
 });
 
-/** Counts and skips malformed lines, such as the truncated last line of a turn killed mid-write. */
+/** Counts and skips malformed lines, such as the truncated last line of a session killed mid-write. */
 const parseHookEvidence = (text: string): HookEvidence => {
   const evidence: HookEvidence = { records: [], malformedLines: 0, readError: null };
   for (const line of text.split("\n")) {

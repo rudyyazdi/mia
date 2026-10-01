@@ -41,6 +41,8 @@ export interface SessionRecord {
     /** How many events the session had recorded when the request arrived: those streamed before it. */
     event_index: number;
   }[];
+  /** Events and gate requests past MAX_RECORDED (see context.ts), counted instead of kept. */
+  dropped: number;
   /** Permission-prompt requests the approval bridge received: none are expected, as the gate decides every call. */
   bridge_requests: number;
   result: SessionResult | null;

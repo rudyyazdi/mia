@@ -8,9 +8,6 @@ import { appendFileSync } from "node:fs";
 import { request } from "node:http";
 import { Command } from "commander";
 
-/** The most hook input it reads: past this the call is blocked rather than buffered. */
-const MAX_INPUT_BYTES = 1024 * 1024;
-
 const block = (reason) => {
   process.stderr.write(`Mia blocked this call: ${reason}\n`);
   process.exit(2);
@@ -19,9 +16,14 @@ process.on("uncaughtException", (error) =>
   block(error instanceof Error ? error.message : String(error)),
 );
 
-const { gate, evidence } = new Command()
+const { gate, evidence, maxBytes } = new Command()
   .requiredOption("--gate <url>", "the tool gate to ask")
   .requiredOption("--evidence <file>", "where each hook input is appended")
+  .requiredOption(
+    "--max-bytes <n>",
+    "the most hook input it reads: past this the call is blocked rather than buffered",
+    (value) => Number.parseInt(value, 10),
+  )
   .exitOverride(() => block("the hook was started without its gate"))
   .parse()
   .opts();
@@ -73,7 +75,7 @@ const chunks = [];
 let size = 0;
 process.stdin.on("data", (chunk) => {
   size += chunk.length;
-  if (size > MAX_INPUT_BYTES) block("its hook input is larger than Mia reads");
+  if (!(size <= maxBytes)) block("its hook input is larger than Mia reads");
   chunks.push(chunk);
 });
 process.stdin.on("end", () => {

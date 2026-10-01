@@ -19,6 +19,9 @@ import type { ProbeDeadlines, ProbeOptions, SessionRecord, SessionSpec } from ".
 
 export const log = (...args: unknown[]) => console.log(`[probe]`, ...args);
 
+/** How many events, and how many gate requests, one session's record keeps; past it they are only counted. */
+const MAX_RECORDED = 10_000;
+
 /**
  * Owns one probe run's evidence directory, fixture, tool gate, approval bridge and live-call budget, and the records
  * of every session run so far. `close` releases the fixture, gate and bridge.
@@ -182,6 +185,7 @@ export class ProbeContext {
       session_id: sessionId,
       events: [],
       gate_requests: [],
+      dropped: 0,
       bridge_requests: 0,
       result: null,
       ledger_after: null,
@@ -204,6 +208,10 @@ export class ProbeContext {
       this.wakeWaiters();
       const decision = await spec.decide(request, session);
       const { abandoned, ...seen } = request;
+      if (session.gate_requests.length >= MAX_RECORDED) {
+        session.dropped += 1;
+        return decision;
+      }
       session.gate_requests.push({
         request: seen,
         decision,
@@ -228,7 +236,8 @@ export class ProbeContext {
           return decided;
         },
         onEvent: async (event) => {
-          session.events.push(event);
+          if (session.events.length < MAX_RECORDED) session.events.push(event);
+          else session.dropped += 1;
           this.wakeWaiters();
           if (event.type === "text_delta" && event.parentCallId === null)
             process.stdout.write(event.text);

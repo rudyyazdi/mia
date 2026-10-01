@@ -39,7 +39,7 @@ import {
   type ConversationEvent,
   type ConversationRejection,
 } from "./decide-conversation.ts";
-import type { ConversationState } from "./conversation-state.ts";
+import { releasedCall, type ConversationState } from "./conversation-state.ts";
 import type { EngineEffect, GateAnswer, SessionStart } from "./engine-effects.ts";
 import {
   commitEvents,
@@ -254,7 +254,7 @@ export class Engine implements CommandEngine {
   ): Dispatched<ConversationRejection, EventChange> | null {
     try {
       const dispatched = machine.dispatch(event);
-      if (dispatched.kind === "rejected")
+      if (dispatched.kind === "rejected" && dispatched.rejection.kind !== "manager_result")
         this.deps.log(`${event.kind} not applied: ${dispatched.rejection.kind}`);
       if (dispatched.kind === "failed")
         this.deps.log(`${event.kind} not recorded: ${errorMessage(dispatched.error)}`);
@@ -501,7 +501,7 @@ export class Engine implements CommandEngine {
         this.report(machine, { ...drawn, kind: "turn_ended", summary });
       })
       .with({ type: "tool_result" }, async (result) => {
-        const call = this.releasedCall(machine.state, result.runtimeCallId);
+        const call = machine.state ? releasedCall(machine.state, result.runtimeCallId) : null;
         const declared = call && !result.isError ? extractDeclaredArtifact(result.content) : null;
         const bodyLog = call ? this.bodyLogOf(call.toolIdentity) : null;
         const [output, bodies] = await Promise.all([
@@ -561,18 +561,6 @@ export class Engine implements CommandEngine {
         () => undefined,
       )
       .exhaustive();
-  }
-
-  /** The released call a result names, among running tasks and the unsettled calls of ended ones. */
-  private releasedCall(
-    state: ConversationState | null,
-    runtimeCallId: string,
-  ): { toolIdentity: string } | null {
-    if (!state) return null;
-    for (const task of state.tasks.values())
-      for (const call of task.calls.values())
-        if (call.runtimeCallId === runtimeCallId && call.status === "dispatched") return call;
-    return state.unsettledCalls.get(runtimeCallId) ?? null;
   }
 
   // ---------------------------------------------------------------- the gate

@@ -96,7 +96,7 @@ const commits = (): Commit[] => {
     { events: [eventsOf(null)(1, "conversation_started")] },
     {
       events: [
-        first(2, "task_submitted", { text: "summarise my inbox" }),
+        first(2, "message_received", { text: "summarise my inbox" }),
         first(3, "task_started"),
       ],
       tasks: [{ ...task, id: "first", status: "running" }],
@@ -105,7 +105,7 @@ const commits = (): Commit[] => {
     {
       events: [
         first(4, "tool_proposed", { ...READ, source: "permission_request" }),
-        first(5, "policy_evaluated", { tool_call_id: "call-1" }),
+        first(5, "tool_dispatched", { tool_call_id: "call-1" }),
         first(6, "approval_requested", { tool_call_id: "call-1", approval_id: "approval-1" }),
       ],
       tool_calls: [call1],
@@ -151,11 +151,11 @@ const commits = (): Commit[] => {
       tasks: [{ ...task, id: "first", status: "completed" }],
     },
     {
-      events: [second(14, "task_submitted"), second(15, "task_started")],
+      events: [second(14, "message_received"), second(15, "task_started")],
       tasks: [{ ...task, id: "second", status: "running" }],
       executions: [{ ...execution, id: "x2", task_id: "second" }],
     },
-    { events: [second(16, "tool_proposal_started", { runtime_call_id: "r2" })] },
+    { events: [second(16, "tool_refused", { runtime_call_id: "r2" })] },
     { events: [second(17, "tool_proposed", WRITE)], tool_calls: [call2] },
     {
       events: [second(18, "tool_proposed", WRITE)],
@@ -163,7 +163,7 @@ const commits = (): Commit[] => {
     },
     {
       events: [
-        second(19, "policy_evaluated", { tool_call_id: "call-2" }),
+        second(19, "tool_dispatched", { tool_call_id: "call-2" }),
         second(20, "error", { message: "tool fs.write is not listed" }),
       ],
       tool_calls: [

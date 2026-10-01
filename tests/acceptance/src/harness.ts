@@ -28,11 +28,11 @@ export interface TestServer {
   logs: readonly string[];
   /** Resolves with the next line the server logs that `matches`; call it before what makes the server log it. */
   waitForLog(matches: (line: string) => boolean): Promise<string>;
-  /** Aborts the deadline of every evidence read in progress (turn end or conversation start), as if it had timed out. */
+  /** Aborts the deadline of every evidence read in progress (session end or conversation start), as if it had timed out. */
   expireEvidenceReads(): void;
   /**
-   * Holds the next evidence read of `path` (a turn's transcript or hook evidence, or a starting conversation's prompt
-   * or architecture document) until `release`, as a read blocked on a stale mount would be;
+   * Holds the next evidence read of `path` (a session's transcript or hook evidence, or a starting conversation's
+   * prompt or architecture document) until `release`, as a read blocked on a stale mount would be;
    * `started` resolves once the engine has asked for it. Its deadline or shutdown still abandons it.
    */
   holdEvidenceRead(path: string): HeldRead;
@@ -80,7 +80,7 @@ const reachHold = (holdsByPath: Map<string, PendingHold>, path: string): Promise
 
 /** A test's own timeout bounds its waits; connecting gets a shorter deadline so a dead server fails fast. */
 const CONNECT_TIMEOUT_MS = 10_000;
-/** How long closing waits for a turn the test left running; a scripted turn that survives interruption never ends. */
+/** How long closing waits for a session the test left running; one held by `exitsOnStop = false` never ends. */
 const TEARDOWN_TURN_WAIT_MS = 3_000;
 /** What the engine logs when the kernel refuses a dispatch nested inside another's effects (see `createKernel`). */
 const NESTED_DISPATCH = "dispatch while another dispatch is in progress";

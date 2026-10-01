@@ -11,7 +11,7 @@ export interface RuntimeExit {
   signal: NodeJS.Signals | null;
 }
 
-/** A spawned runtime process, as a turn and a manager agent's session both follow it. */
+/** A spawned runtime process, as a manager agent's session follows it. */
 export interface RuntimeProcess {
   readonly child: ChildProcess;
   /** Settles once the process is gone and every stdout line is handled, or once a kill gave up waiting for it. */
@@ -24,7 +24,7 @@ export interface RuntimeProcess {
    * SIGKILLs the runtime's whole process group and waits for its exit: "forced_kill" once observed, or "unknown" once
    * `deadline` aborts first, when the process is abandoned and its output no longer read so nothing waits on it
    * forever. The entry point builds the deadline.
-   * SIGKILL, deliberately not SIGTERM: see `TurnHandle.interrupt` for the runtime behaviour this avoids.
+   * SIGKILL, deliberately not SIGTERM: see `SessionHandle.stop` for the runtime behaviour this avoids.
    */
   kill(deadline: AbortSignal): Promise<RuntimeCancellation>;
 }

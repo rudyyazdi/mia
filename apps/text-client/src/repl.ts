@@ -157,7 +157,7 @@ const renderEvents = (session: Session): void => {
     );
   });
   client.on("interruption_requested", (event: ServerEventOf<"interruption_requested">) =>
-    out(`⏹ interruption of task ${event.payload.task_id} requested; its action gate closed`),
+    out(`⏹ interruption of task ${event.payload.task_id} requested; its calls are refused`),
   );
   client.on("interruption_outcome", (event: ServerEventOf<"interruption_outcome">) => {
     session.tasks.delete(event.payload.task_id);

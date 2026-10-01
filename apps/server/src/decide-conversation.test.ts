@@ -173,12 +173,13 @@ const delegate = (runtimeCallId: string, input: unknown = {}): GateRequestEvent 
 const result = (
   runtimeCallId: string,
   parentCallId: string | null = "toolu_delegate_a1",
+  isError = false,
 ): ConversationEvent => ({
   kind: "tool_result",
   ...drawn,
   runtimeCallId,
   parentCallId,
-  isError: false,
+  isError,
   content: "ok",
   output: null,
   bodies: null,
@@ -275,9 +276,15 @@ describe("the manager agent's calls", () => {
     expect(gateAnswer(accepted(state, delegate("toolu_one_too_many")))).toBe("deny");
   });
 
-  it("frees a delegation's place when its result comes without a worker agent", () => {
-    const state = after(running(), delegate("toolu_d"), result("toolu_d", null));
-    expect(state.pendingDelegations.size).toBe(0);
+  it("frees a delegation's place when its result comes, recording it unstarted only when it failed", () => {
+    const delegated = after(running(), delegate("toolu_d"));
+    // A launch's result can come before the report of the worker agent it started.
+    const launched = accepted(delegated, result("toolu_d", null));
+    expect(launched.next.pendingDelegations.size).toBe(0);
+    expect(recordLabels(launched.records)).not.toContain("delegation_unstarted");
+    const failed = accepted(delegated, result("toolu_d", null, true));
+    expect(failed.next.pendingDelegations.size).toBe(0);
+    expect(recordLabels(failed.records)).toContain("delegation_unstarted");
   });
 
   it("denies every other call the manager agent makes itself", () => {
@@ -460,7 +467,13 @@ describe("stops and ends", () => {
     expect(lost.next.session).toBeNull();
     // Its lease is still unreleased in the records, so memory keeps it.
     expect(lost.next.leases.has("mcp__desk__click")).toBe(true);
-    expect(effectLabels(accepted(lost.next, message("again")).effects)).toContain("open_session");
+    const again = accepted(lost.next, message("again"));
+    expect(effectLabels(again.effects)).toContain("open_session");
+    // The note Mia puts before the next message is recorded with it.
+    const received = again.records.find(
+      (record) => record.kind === "append_event" && record.input.type === "message_received",
+    );
+    expect(received).toMatchObject({ input: { payload: { note: lost.next.pendingNote } } });
   });
 
   it("reports a worker agent that ended with a released call as outcome unknown", () => {

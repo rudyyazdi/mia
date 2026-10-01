@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import type { Effort } from "@mia/protocol";
 import { runtimeMcpServer, type RuntimeConfig } from "./config.ts";
 import { BRIDGE_SERVER_NAME, BRIDGE_TOOL_IDENTITY } from "./bridge.ts";
-import { GATE_HOOK_PATH } from "./gate.ts";
+import { GATE_HOOK_PATH, MAX_GATE_PAYLOAD_BYTES } from "./gate.ts";
 import { MANAGER_TOOLS, WORKER_AGENT_NAME } from "./manager-tools.ts";
 
 /** Directories (owner-only) to create, in order, then files (owner-only) to write into them. */
@@ -10,6 +10,9 @@ export interface LaunchSetup {
   directories: string[];
   files: { path: string; content: string }[];
 }
+
+/** One argument of the hook's shell command, single-quoted so the shell expands nothing in it (`$()`, backticks). */
+export const shellQuoted = (part: string): string => `'${part.replaceAll("'", `'\\''`)}'`;
 
 /** How long the gate hook may hold a call, in seconds (the runtime's unit for hooks): as long as a held approval. */
 const GATE_HOOK_TIMEOUT_S = 24 * 60 * 60;
@@ -145,8 +148,10 @@ export const prepareSession = (input: SessionInput): SessionPlan => {
                 input.gateUrl,
                 "--evidence",
                 hookEvidence,
+                "--max-bytes",
+                String(MAX_GATE_PAYLOAD_BYTES),
               ]
-                .map((part) => JSON.stringify(part))
+                .map(shellQuoted)
                 .join(" "),
               timeout: GATE_HOOK_TIMEOUT_S,
             },

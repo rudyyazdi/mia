@@ -89,7 +89,6 @@ const STOPPED_CALLS: ReadonlySet<ToolCallStatus> = new Set([
   "blocked_gate",
   "invalidated",
   "failed",
-  "cancelled",
 ]);
 
 /**

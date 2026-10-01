@@ -152,15 +152,38 @@ export const taskByRuntimeId = (
 ): TaskState | undefined =>
   state.tasks.values().find((task) => task.runtimeTaskId === runtimeTaskId);
 
-/** The running task holding call `runtimeCallId`, and the call. */
-export const callByRuntimeId = (
+/** The call a result names: a running task's, or an unsettled call of an ended task. */
+export type ResultTarget =
+  | { kind: "running"; task: TaskState; callId: string; released: boolean; toolIdentity: string }
+  | { kind: "unsettled"; call: UnsettledCall };
+
+export const resultTarget = (
   state: ConversationState,
   runtimeCallId: string,
-): { task: TaskState; call: CallState } | undefined => {
+): ResultTarget | null => {
   for (const task of state.tasks.values())
     for (const call of task.calls.values())
-      if (call.runtimeCallId === runtimeCallId) return { task, call };
-  return undefined;
+      if (call.runtimeCallId === runtimeCallId)
+        return {
+          kind: "running",
+          task,
+          callId: call.id,
+          released: call.status === "dispatched",
+          toolIdentity: call.toolIdentity,
+        };
+  const unsettled = state.unsettledCalls.get(runtimeCallId);
+  return unsettled ? { kind: "unsettled", call: unsettled } : null;
+};
+
+/** The released call a result names: a running task's dispatched call, or an unsettled call of an ended task. */
+export const releasedCall = (
+  state: ConversationState,
+  runtimeCallId: string,
+): { toolIdentity: string } | null => {
+  const target = resultTarget(state, runtimeCallId);
+  if (target === null) return null;
+  if (target.kind === "unsettled") return target.call;
+  return target.released ? target : null;
 };
 
 /** The state with task `taskId` replaced by `update` of it; a task the state lacks is a bug, and throws. */

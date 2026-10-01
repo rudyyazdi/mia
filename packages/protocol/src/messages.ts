@@ -165,7 +165,6 @@ export const ErrorCodeSchema = z.enum([
   "not_found",
   "invalid_state",
   "duplicate_command_conflict",
-  "runtime_failure",
   "configuration_error",
   "record_failure",
   "internal",
@@ -185,14 +184,12 @@ export type ErrorDisposition = z.infer<typeof ErrorDispositionSchema>;
 export const ToolCallStatusSchema = z.enum([
   "proposed",
   "awaiting_approval",
-  "permitted",
   "denied",
   "blocked_gate",
   "invalidated",
   "dispatched",
   "completed",
   "failed",
-  "cancelled",
   "unknown",
 ]);
 export type ToolCallStatus = z.infer<typeof ToolCallStatusSchema>;

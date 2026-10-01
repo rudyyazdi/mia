@@ -26,7 +26,8 @@ export interface MiaServer {
   catalog: Catalog;
   bridge: ApprovalBridge;
   /**
-   * Shut down: stop accepting commands, interrupt the active turn and wait for it until `turnWait` aborts,
+   * Shut down: stop accepting commands, stop the active session and wait for its end to be recorded until `turnWait`
+   * aborts,
    * close the gateway (waiting, until `turnWait` aborts, for commands still storing their replies) and the bridge,
    * then close the catalog. Every step runs even when an earlier one fails,
    * and the returned promise rejects with all their errors only after the last. Memoised: a second call (a
@@ -36,17 +37,17 @@ export interface MiaServer {
 }
 
 /**
- * The turn wait an entry point should give `close`: longer than the adapter takes to kill a runtime and
- * observe its exit, so a killed turn is normally recorded before the catalog closes.
+ * The wait an entry point should give `close`: longer than the adapter takes to kill a runtime and observe its exit,
+ * so a stopped session's end is normally recorded before the catalog closes.
  */
 export const SHUTDOWN_TURN_WAIT_MS = 10_000;
 
 /**
- * The evidence read deadline an entry point should give `startServer`: how long a finished turn's evidence reads may
- * take before the turn is recorded without that evidence, and how long a conversation start's reads and stores may
- * take before the start is refused. A transcript on a healthy disk reads in milliseconds; only a read that never
- * returns (a regular file on a stale mount; a FIFO is refused without being read) reaches this. Until it does, a
- * turn-end read refuses every submission as busy, and a start's read refuses every other start as busy.
+ * The evidence read deadline an entry point should give `startServer`: how long a session end's evidence reads, or a
+ * result's output capture, may take before it is recorded without that evidence, and how long a conversation start's
+ * reads and stores may take before the start is refused. A transcript on a healthy disk reads in milliseconds; only a
+ * read that never returns (a regular file on a stale mount; a FIFO is refused without being read) reaches this. Until
+ * it does, a start's read refuses every other start as busy.
  */
 export const EVIDENCE_READ_TIMEOUT_MS = 10_000;
 
@@ -173,8 +174,8 @@ export const startServer = async (input: {
             errors.push(error);
           }
         };
-        // In this order: the turn must finish before the catalog that records it closes, and the gateway
-        // closes after the turn so the interruption still reaches the client.
+        // In this order: the session's end must be recorded before the catalog closes, and the gateway closes after
+        // it so the interruption still reaches the client.
         await step(() => engine.shutdown(turnWait));
         await step(() => gateway.close(turnWait));
         await step(() => gate.close());

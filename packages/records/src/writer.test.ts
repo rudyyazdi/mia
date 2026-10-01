@@ -100,7 +100,7 @@ describe("record writer", () => {
           id: "evt-1",
           receivedAt: AT,
           conversationId: "conv-1",
-          type: "task_submitted",
+          type: "message_received",
           payload: { ok: true },
         });
         writer.createTask({
@@ -143,7 +143,7 @@ describe("record writer", () => {
       id: "evt-1",
       receivedAt: AT,
       conversationId: "conv-1",
-      type: "task_submitted",
+      type: "message_received",
       payload: { api_key: "sk-ant-abcdefghijklmnop", text: "Bearer abcdefghijklmnopqrstuvwxyz" },
     });
     const second = writer.appendEvent({
@@ -187,7 +187,7 @@ describe("record writer", () => {
         id: "evt-1",
         receivedAt: AT,
         conversationId: "conv-1",
-        type: "task_submitted",
+        type: "message_received",
         payload: {},
         taskId,
       });

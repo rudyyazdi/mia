@@ -19,6 +19,7 @@ import {
   type TaskStatus,
   type ToolCallPolicy,
   type ToolCallStatus,
+  type TurnStatus,
 } from "@mia/protocol";
 import type { ExecutionStatus, NewId } from "@mia/records";
 import { buildConversationStart, type StartIds } from "./conversation-start.ts";
@@ -28,6 +29,7 @@ import {
   MAX_QUEUED_INPUTS,
   MAX_RUNNING_TASKS,
   MAX_UNSETTLED_CALLS,
+  resultTarget,
   taskByRuntimeId,
   type ConversationState,
   type TaskState,
@@ -243,7 +245,9 @@ export type ConversationRejection =
   | { kind: "duplicate_task" }
   | { kind: "not_owner" }
   | { kind: "not_pending" }
-  | { kind: "already_stopping" };
+  | { kind: "already_stopping" }
+  /** A result of the manager agent's own call that settles nothing: a started delegation's, or TaskStop's. */
+  | { kind: "manager_result" };
 
 type Decided = MachineDecision<
   ConversationState,
@@ -336,6 +340,8 @@ const messageSubmitted = (state: ConversationState, event: MessageEvent, now: Da
       from: event.fromMia ? "mia" : "user",
       client_id: event.clientId,
       runtime_message_id: event.runtimeMessageId,
+      // What Mia put before the text, so the record shows all the manager agent read.
+      ...(state.pendingNote === null ? {} : { note: state.pendingNote }),
     },
     { id: received, executionId: session.executionId },
   );
@@ -483,7 +489,7 @@ const inputTaken = (state: ConversationState, event: InputTakenEvent, now: Date)
 const finishTurn = (
   draft: ConversationDraft,
   outcome: {
-    status: "completed" | "failed" | "interrupted";
+    status: Exclude<TurnStatus, "running">;
     error?: string;
     summary?: TurnSummary;
   },
@@ -1259,37 +1265,23 @@ const approvalAbandoned = (
   return draft.accepted();
 };
 
-/** The call a result names: a running task's, or an unsettled call of an ended task. */
-type ResultTarget =
-  | { kind: "running"; task: TaskState; callId: string; released: boolean; toolIdentity: string }
-  | { kind: "unsettled"; call: UnsettledCall };
-
-const resultTarget = (state: ConversationState, runtimeCallId: string): ResultTarget | null => {
-  for (const task of state.tasks.values())
-    for (const call of task.calls.values())
-      if (call.runtimeCallId === runtimeCallId)
-        return {
-          kind: "running",
-          task,
-          callId: call.id,
-          released: call.status === "dispatched",
-          toolIdentity: call.toolIdentity,
-        };
-  const unsettled = state.unsettledCalls.get(runtimeCallId);
-  return unsettled ? { kind: "unsettled", call: unsettled } : null;
-};
-
 /**
  * A call returned. A worker agent's released call completes or fails, with its declared output and MCP bodies, and
  * frees its exclusive tool; a call of an ended task settles from unknown the same way. A manager agent's result
- * settles a delegation whose worker agent never started. Anything else is recorded unmatched.
+ * frees its delegation's place, recorded as unstarted when it failed. Anything else is recorded unmatched.
  */
 const toolResult = (state: ConversationState, event: ToolResultEvent, now: Date): Decided => {
   const draft = draftFor(state, event, now);
   if (event.parentCallId === null) {
-    if (!state.pendingDelegations.has(event.runtimeCallId)) return rejected({ kind: "no_task" });
+    if (!state.pendingDelegations.has(event.runtimeCallId))
+      return rejected({ kind: "manager_result" });
     const pendingDelegations = new Set(state.pendingDelegations);
     pendingDelegations.delete(event.runtimeCallId);
+    // A launch's result can precede the report of the worker agent it started: only a failed one is unstarted.
+    if (!event.isError) {
+      draft.advance({ ...draft.draft, pendingDelegations });
+      return draft.accepted();
+    }
     draft.record(
       "delegation_unstarted",
       { delegation_call_id: event.runtimeCallId, is_error: event.isError },

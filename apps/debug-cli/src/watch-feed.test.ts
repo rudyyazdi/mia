@@ -28,7 +28,7 @@ const conversation = (): WatchRows =>
     approvals: [approvalRow()],
     events: [
       eventRow({ sequence: 1, type: "conversation_started" }),
-      eventRow({ sequence: 2, type: "task_submitted", task_id: "t1" }),
+      eventRow({ sequence: 2, type: "message_received", task_id: "t1" }),
       eventRow({ sequence: 3, type: "tool_proposed", task_id: "t1", execution_id: "x1" }),
     ],
   });

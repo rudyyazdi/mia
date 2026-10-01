@@ -175,23 +175,24 @@ describe("controlled fixture", () => {
     await expect(harness.state()).resolves.toHaveProperty("counter");
   });
 
-  it("starts a reset's ledger empty even when it releases a slow call left at its barrier", async () => {
+  /** A fresh ledger with one uncancellable slow call entered and waiting at its barrier. */
+  const enteredUncancellable = async () => {
     await harness.reset();
     const mcpClient = await client();
     const call = mcpClient.callTool({ name: "slow", arguments: { mode: "uncancellable" } });
     call.catch(() => undefined);
-    await harness.waitEntered();
+    return { mcpClient, entered: await harness.waitEntered() };
+  };
+
+  it("starts a reset's ledger empty even when it releases a slow call left at its barrier", async () => {
+    const { mcpClient } = await enteredUncancellable();
     await harness.reset();
     expect(await harness.state()).toMatchObject({ counter: 0, ledger: [], pending: [] });
     await mcpClient.close();
   });
 
   it("slow uncancellable survives disconnection and commits on release", async () => {
-    await harness.reset();
-    const mcpClient = await client();
-    const call = mcpClient.callTool({ name: "slow", arguments: { mode: "uncancellable" } });
-    call.catch(() => undefined);
-    const entered = await harness.waitEntered();
+    const { mcpClient, entered } = await enteredUncancellable();
     await mcpClient.close();
     const before = await harness.state();
     expect(before.counter).toBe(0);

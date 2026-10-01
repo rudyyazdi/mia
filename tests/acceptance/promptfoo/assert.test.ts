@@ -26,7 +26,7 @@ const judge = (scenario: ScenarioName, evidence: Record<string, unknown>) =>
 describe("scenario assertion", () => {
   it("reads ledger kinds by their declared names and refuses an undeclared one", () => {
     const interrupted = (kinds: Record<string, number>) =>
-      evidenceFor("interrupt-task", {
+      evidenceFor("interrupt-all", {
         tasks: [{ task_id: "task", status: "interrupted" }],
         ledger_after: {
           counter: 0,
@@ -35,13 +35,13 @@ describe("scenario assertion", () => {
           entered: [{ tool: "slow", call_id: "call" }],
           kinds,
         },
-        events: [{ type: "interruption_outcome", sequence: 1, payload: {} }],
+        events: [{ type: "interruption_outcome", sequence: 1, payload: { actions: [] } }],
       });
-    expect(judge("interrupt-task", interrupted({ entered: 1, cancelled: 1 })).pass).toBe(true);
-    expect(judge("interrupt-task", interrupted({ entered: 1 })).reason).toBe(
+    expect(judge("interrupt-all", interrupted({ entered: 1, cancelled: 1 })).pass).toBe(true);
+    expect(judge("interrupt-all", interrupted({ entered: 1 })).reason).toBe(
       "slow action was not cancelled in the ledger",
     );
-    expect(judge("interrupt-task", interrupted({ entered: 1, canceled: 1 })).reason).toMatch(
+    expect(judge("interrupt-all", interrupted({ entered: 1, canceled: 1 })).reason).toMatch(
       /^provider output does not match the evidence shape/,
     );
   });

@@ -1,12 +1,16 @@
 /** promptfoo javascript assertion: judge a scenario by fixture-ledger evidence and recorded events, never by model prose alone. */
 import { match } from "ts-pattern";
 import { z } from "zod";
-import { isRecord, type ServerEventType } from "@mia/protocol";
+import { isRecord, ToolCallStatusSchema, type ServerEventType } from "@mia/protocol";
 import { readScenarioName, ScenarioEvidenceSchema, type ScenarioEvidence } from "./scenarios.ts";
 
 type Result = { pass: boolean; score: number; reason: string };
 
 const fail = (reason: string): Result => ({ pass: false, score: 0, reason });
+
+const InterruptionOutcomeSchema = z.looseObject({
+  actions: z.array(z.looseObject({ tool_identity: z.string(), status: ToolCallStatusSchema })),
+});
 
 /** What the provider emits instead of evidence when the scenario itself failed. */
 const ErrorEnvelopeSchema = z.looseObject({ error: z.string().optional() });
@@ -73,8 +77,22 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
     if (!evidence.replies.some((reply) => reply.cause === "task_end" && reply.text.length > 0))
       problems.push("no turn reported a task's end");
   };
-  const requireInterrupted = () => {
-    if ((kinds.cancelled ?? 0) < 1) problems.push("slow action was not cancelled in the ledger");
+  /**
+   * The interrupt control kills the runtime, which closes the fixture call, so the fixture cancels it. Stopping one
+   * task stops its worker agent, but the call in flight is not cancelled (TaskStop leaves it), so it must be reported
+   * unknown, never as finished.
+   */
+  const requireInterrupted = (killed: boolean) => {
+    if (killed && (kinds.cancelled ?? 0) < 1)
+      problems.push("slow action was not cancelled in the ledger");
+    const outcome = InterruptionOutcomeSchema.safeParse(
+      evidence.events.find((event) => event.type === "interruption_outcome")?.payload,
+    );
+    const slow = outcome.success
+      ? outcome.data.actions.find((action) => action.tool_identity === "mcp__fixture__slow")
+      : undefined;
+    if (!killed && slow?.status !== "unknown")
+      problems.push(`the stopped slow call was reported ${slow?.status ?? "missing"}, not unknown`);
     if (enteredOf("slow") !== 1)
       problems.push(`slow entered ${enteredOf("slow")} times (duplicate dispatch?)`);
     if (commits.length !== 0) problems.push(`commits after interruption: ${commits.length}`);
@@ -129,8 +147,8 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
       requireTasks(["completed"]);
       requireReported();
     })
-    .with("interrupt-task", requireInterrupted)
-    .with("interrupt-all", requireInterrupted)
+    .with("interrupt-task", () => requireInterrupted(false))
+    .with("interrupt-all", () => requireInterrupted(true))
     .with("allow-policy-no-prompt", () => {
       if (approvals.length !== 0) problems.push("policy-allow tool prompted");
       if (commitsOf("change") !== 1)

@@ -162,6 +162,12 @@ const endOf = (event: ServerEvent): { taskId: string; status: TaskStatus } | nul
   return null;
 };
 
+/** Whether every task the conversation started has ended. */
+const allTasksEnded = (events: readonly ServerEvent[]): boolean => {
+  const ended = new Set(events.flatMap((event) => endOf(event)?.taskId ?? []));
+  return events.every((event) => event.type !== "task_started" || ended.has(event.payload.task_id));
+};
+
 /**
  * Whether the conversation went quiet after its first `since` events: a turn ended after them, every task started has
  * ended, and a turn that also ended began after the last task's end, so it was reported.
@@ -169,13 +175,12 @@ const endOf = (event: ServerEvent): { taskId: string; status: TaskStatus } | nul
 export const quietAfter = (events: readonly ServerEvent[], since: number): boolean => {
   const recent = events.slice(since);
   const lastIndex = (test: (event: ServerEvent) => boolean) => recent.findLastIndex(test);
-  const ended = new Set(events.flatMap((event) => endOf(event)?.taskId ?? []));
   return (
     lastIndex((event) => event.type === "turn_finished") >
       lastIndex((event) => event.type === "turn_started") &&
     lastIndex((event) => event.type === "turn_started") >
       lastIndex((event) => endOf(event) !== null) &&
-    events.every((event) => event.type !== "task_started" || ended.has(event.payload.task_id))
+    allTasksEnded(events)
   );
 };
 
@@ -226,7 +231,11 @@ const slowEntered = async (ctx: ScenarioContext, notes: string[]): Promise<strin
 
 const slowOnce = (mode: SlowMode): string => `Call fixture.slow with mode ${mode} exactly once.`;
 
-/** An interrupt scenario: interrupt the slow call's task the moment it enters, then wait for quiet. */
+/**
+ * An interrupt scenario: interrupt the slow call's task the moment it enters, then wait until it settles. Stopping one
+ * task leaves the session running, so a turn reports it; the interrupt control kills the session, so no turn comes
+ * until the next message, and the tasks' ends are enough.
+ */
 const interruptScenario = (
   name: ScenarioName,
   interrupt: (ctx: ScenarioContext, taskId: string) => Promise<AckPayload>,
@@ -242,7 +251,9 @@ const interruptScenario = (
     await slowEntered(ctx, notes);
     const started = await ctx.client.waitFor("task_started", () => true, acknowledgedWithin(ctx));
     notes.push(`interrupt ack ${describeAck(await interrupt(ctx, started.payload.task_id))}`);
-    await settled(ctx, since);
+    if (name === "interrupt-all")
+      await eventsUntil(ctx.client, allTasksEnded, ctx.within(SETTLE_TIMEOUT_MS));
+    else await settled(ctx, since);
   },
 });
 

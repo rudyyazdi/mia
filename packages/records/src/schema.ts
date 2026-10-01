@@ -17,7 +17,11 @@ import type {
 
 export const SCHEMA_VERSION = 4;
 
-/** Logical records from docs/D1/CONVERSATION-RECORDS.md. Foreign keys are enforced per connection (see catalog.ts). */
+/**
+ * The catalog's records. Foreign keys are enforced per connection (see catalog.ts). A command id is answered with its
+ * stored reply when resent and refused with a different payload; an approval authorizes one exact call binding once;
+ * events are deduplicated only by a producer's own event id, never by content; unknown timing stays unknown.
+ */
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -93,7 +97,7 @@ CREATE TABLE IF NOT EXISTS client_connections (
 );
 CREATE INDEX IF NOT EXISTS client_connections_client ON client_connections(client_id, connected_at, id);
 
--- D2: one run of the manager agent, started by user input or by a task's end (docs/GLOSSARY.md). D1 records none.
+-- One run of the manager agent, started by user input or by a task's end (docs/GLOSSARY.md).
 CREATE TABLE IF NOT EXISTS turns (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -109,7 +113,7 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, started_at, id);
 
--- A D1 task is one user message; a D2 task is one worker agent's work, linked to the turn that delegated it.
+-- A task is one worker agent's work, linked to the turn that delegated it.
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -127,12 +131,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS tasks_conversation ON tasks(conversation_id, created_at, id);
 CREATE INDEX IF NOT EXISTS tasks_turn ON tasks(turn_id, created_at, id);
 
--- A manager agent's execution runs no task; every other execution (D1's single agent, a worker agent) runs one.
+-- A manager agent's execution runs no task; a worker agent's runs one.
 CREATE TABLE IF NOT EXISTS executions (
   id TEXT PRIMARY KEY,
   task_id TEXT,
   conversation_id TEXT NOT NULL,
-  agent_role TEXT NOT NULL CHECK (agent_role IN ('single','manager','worker')),
+  agent_role TEXT NOT NULL CHECK (agent_role IN ('manager','worker')),
   runtime_identity TEXT NOT NULL,
   runtime_conversation_id TEXT,
   requested_model TEXT NOT NULL,
@@ -233,7 +237,7 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(status, id) WHERE status = 'pending';
 
--- D2: who holds an exclusive tool. At most one unreleased lease per tool and conversation; each new lease of a tool
+-- Who holds an exclusive tool. At most one unreleased lease per tool and conversation; each new lease of a tool
 -- takes the next fence, so a late result of a released lease is recognisable by its older fence.
 CREATE TABLE IF NOT EXISTS tool_leases (
   id TEXT PRIMARY KEY,
@@ -322,8 +326,8 @@ export type ExportTable = (typeof EXPORT_TABLES)[number];
 
 export type ConversationStatus = "active" | "closed";
 export type ExecutionStatus = "running" | "completed" | "failed" | "killed";
-/** Which agent an execution ran: D1's single agent, or D2's manager agent or one of its worker agents. */
-export type AgentRole = "single" | "manager" | "worker";
+/** Which agent an execution ran: the manager agent or one of its worker agents. */
+export type AgentRole = "manager" | "worker";
 
 export type ClientKind = "text-client";
 /**

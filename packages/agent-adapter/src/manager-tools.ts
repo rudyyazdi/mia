@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * The manager agent's own tools, named once (D2): `Task` starts a worker agent (the runtime streams and gates its
+ * The manager agent's own tools, named once: `Task` starts a worker agent (the runtime streams and gates its
  * calls under the name `Agent`), `TaskStop` stops one. A worker agent's tool list leaves both out.
  */
 export const DELEGATE_TOOLS: readonly string[] = ["Task", "Agent"];

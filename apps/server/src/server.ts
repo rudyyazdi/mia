@@ -22,7 +22,6 @@ import type { ServerIdentity } from "./provenance.ts";
 export interface MiaServer {
   profile: Profile;
   gateway: GatewayHandle;
-  /** D1's engine, or D2's when the profile defines a worker agent. */
   engine: Engine;
   catalog: Catalog;
   bridge: ApprovalBridge;

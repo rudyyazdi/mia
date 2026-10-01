@@ -12,7 +12,7 @@ import {
 } from "./harness.ts";
 import type { ScriptedSessions } from "./scripted-session.ts";
 
-// D2's user acceptance test (docs/PLAN.md, Deliverable 2), against the real server, gateway, records and client,
+// The manager agent's user acceptance journey, against the real server, gateway, records and client,
 // with only the runtime scripted: two independent requests, one needing approval, and a long-running background
 // task; a third question answered while the approval is pending; a rejection; the manager agent stopping one
 // worker agent; the interrupt control stopping the rest; and the record of all of it.
@@ -39,7 +39,7 @@ const rows = <Row>(sql: string, ...params: string[]): Row[] => {
 
 const conversationId = (): string => must(client.conversationId, "conversation id");
 
-describe("D2: a manager agent that never blocks", () => {
+describe("a manager agent that never blocks", () => {
   it("runs the plan's acceptance journey and records it", async () => {
     await restart({
       exclusiveTools: [EXCLUSIVE],

@@ -33,7 +33,7 @@ const richConversation = async (): Promise<{ conversationId: string; artifactFil
   const outDir = must(ts.profile.runtime.outputDirectories[0], "output directory");
   mkdirSync(outDir, { recursive: true });
   const artifactFile = join(outDir, "result.txt");
-  writeFileSync(artifactFile, "D1");
+  writeFileSync(artifactFile, "OK");
   // task 1: a reply, an approved, a rejected and an output-declaring call, and a call no policy lists
   const session = await turnWithWorker(scripted, { text: "do things", runtimeTaskId: "a1" });
   await session.reply(
@@ -76,7 +76,7 @@ const richConversation = async (): Promise<{ conversationId: string; artifactFil
   await decide(
     {
       toolName: "mcp__fixture__artifact",
-      input: { name: "result.txt", text: "D1" },
+      input: { name: "result.txt", text: "OK" },
       toolUseId: "toolu_3",
     },
     "approve",
@@ -180,7 +180,7 @@ describe("records, report and export", () => {
         ),
         "utf8",
       ),
-    ).toBe("D1");
+    ).toBe("OK");
   });
 
   it("exports from one consistent snapshot: events written during export do not leak", async () => {

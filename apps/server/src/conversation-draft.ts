@@ -41,7 +41,7 @@ export const workerLinks = (
  * state it moves to. Building touches nothing outside it, so a pure transition builds through one, and one whose
  * records never commit leaves nothing behind. A conversation's start builds from no state (null) and advances to
  * the conversation before it records any event. Records and effects keep the order they were added in: the order the
- * catalog numbers events in and the effects run in. D1's
+ * catalog numbers events in and the effects run in.
  */
 export class ConversationDraft {
   /** The one time every row of the transition records. */

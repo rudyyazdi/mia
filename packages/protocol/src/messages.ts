@@ -55,14 +55,14 @@ export const TaskStatusSchema = z.enum([
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
-/** What started a turn (D2): the user's input, or the end of a task the manager agent then reports. */
+/** What started a turn: the user's input, or the end of a task the manager agent then reports. */
 export const TurnCauseSchema = z.enum(["user_input", "task_end"]);
 export type TurnCause = z.infer<typeof TurnCauseSchema>;
 
 export const TurnStatusSchema = z.enum(["running", "completed", "failed", "interrupted"]);
 export type TurnStatus = z.infer<typeof TurnStatusSchema>;
 
-/** Client-reported diagnostics; voice/display fields are explicitly not applicable in D1. */
+/** Client-reported diagnostics; voice/display fields are explicitly not applicable to a text client. */
 export const ClientDiagnosticsSchema = z.object({
   build: z.object({
     name: z.string(),
@@ -114,8 +114,8 @@ export const InterruptTaskCommand = command(
   z.object({ conversation_id: IdSchema, task_id: IdSchema }).strict(),
 );
 /**
- * The explicit interrupt control (D2): stops every task of the conversation through the engine, without asking the
- * manager agent. D1's engine interrupts its one task.
+ * The explicit interrupt control: stops every task of the conversation through the engine, without asking the
+ * manager agent.
  */
 export const InterruptAllCommand = command(
   "interrupt_all",
@@ -234,10 +234,10 @@ const eventPayloads = {
     task_id: IdSchema,
     execution_id: IdSchema,
     text: z.string(),
-    /** D2: the turn whose manager agent delegated this task to a worker agent. */
+    /** The turn whose manager agent delegated this task to a worker agent. */
     turn_id: IdSchema.optional(),
   }),
-  /** D2: the manager agent began a turn. */
+  /** The manager agent began a turn. */
   turn_started: z.object({
     conversation_id: IdSchema,
     turn_id: IdSchema,
@@ -245,7 +245,7 @@ const eventPayloads = {
     /** Set when the turn reports this task's end. */
     task_id: IdSchema.optional(),
   }),
-  /** D2: text of the manager agent's reply in a turn. */
+  /** Text of the manager agent's reply in a turn. */
   reply_delta: z.object({
     conversation_id: IdSchema,
     turn_id: IdSchema,

@@ -104,7 +104,7 @@ describe("session plan", () => {
     const plan = planIn(directory.path);
     expect(flag(plan, "--input-format")).toBe("stream-json");
     expect(plan.args).toContain("--replay-user-messages");
-    // No inherited rule can allow a call the hook failed to decide (capability record, D2 addendum).
+    // No inherited rule can allow a call the hook failed to decide (see the capability record).
     expect(flag(plan, "--setting-sources")).toBe("");
     expect(flag(plan, "--permission-prompt-tool")).toBe("mcp__mia_approval__request");
     expect(flag(plan, "--tools")).toBe("Task,TaskStop");

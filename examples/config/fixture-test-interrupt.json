@@ -38,6 +38,6 @@
   },
   "architectureDocument": "../../docs/PLAN.md",
   "notes": [
-    "Second test profile from docs/D1/TEST-PLAN.md: change is policy-allow so gating is proven independently of approval prompts."
+    "Second test profile: change is policy-allow so gating is proven independently of approval prompts."
   ]
 }

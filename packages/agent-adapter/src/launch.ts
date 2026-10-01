@@ -113,14 +113,14 @@ export interface SessionPlan {
 }
 
 /**
- * Build the invocation of a manager agent's session (D2): one long-lived runtime that reads the user's messages as
+ * Build the invocation of a manager agent's session: one long-lived runtime that reads the user's messages as
  * stream-json on stdin, so a message reaches the manager agent while its worker agents run, and writes one result
  * per turn. Every tool call, the manager agent's and each worker agent's, passes the gate hook, which blocks until
  * Mia decides; policy has no ask or allow rules, only deny, because an ask rule refuses a call the hook allowed
- * (capability record, D2 addendum). A call the hook fails to decide (it timed out, or crashed without blocking) falls
+ * (see the capability record). A call the hook fails to decide (it timed out, or crashed without blocking) falls
  * back to the runtime's own evaluation: no setting source is loaded (`--setting-sources ""`), so no inherited rule
  * allows it, and the prompt it needs reaches the approval bridge, which denies it. The manager agent's own tools need
- * no permission, so a hook that never ran lets them through (capability record, D2 addendum). Each user message carries a UUID that the runtime
+ * no permission, so a hook that never ran lets them through (see the capability record). Each user message carries a UUID that the runtime
  * replays when a turn takes it (`--replay-user-messages`). It does no I/O: the files it names are returned in `setup`.
  */
 export const prepareSession = (input: SessionInput): SessionPlan => {

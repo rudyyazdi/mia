@@ -62,7 +62,7 @@ export interface SessionHandle {
 }
 
 /**
- * A manager agent's session (D2): one runtime process that stays up for the conversation, reads each user message
+ * A manager agent's session: one runtime process that stays up for the conversation, reads each user message
  * from stdin as a stream-json line, and reports every turn and worker agent on stdout. It owns the process; the
  * caller owns the gate and decides every tool call through it.
  */

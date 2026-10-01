@@ -435,8 +435,8 @@ export class RecordWriter {
   }
 
   /**
-   * Records a task: D1's one user message, or (with `delegation`) one worker agent's work, linked to the turn that
-   * delegated it and to the runtime's own ids for it.
+   * Records a task: one worker agent's work, linked (with `delegation`) to the turn that delegated it and to the
+   * runtime's own ids for it.
    */
   createTask(input: {
     id: string;
@@ -516,7 +516,7 @@ export class RecordWriter {
     });
   }
 
-  // ---- turns and exclusive-tool leases (D2) ----
+  // ---- turns and exclusive-tool leases ----
 
   createTurn(input: {
     id: string;

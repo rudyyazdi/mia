@@ -101,7 +101,7 @@ describe("decideEligibility", () => {
 });
 
 describe("verifyContent", () => {
-  const bytes = Buffer.from("D1");
+  const bytes = Buffer.from("OK");
 
   it("retains bytes without a declared digest, with an empty one, or with a matching one", () => {
     expect(verifyContent(bytes, { path: "/work/out/a.txt" })).toEqual({

@@ -205,7 +205,7 @@ describe("controlled fixture", () => {
     expect(bad.isError).toBe(true);
     const good = await mcpClient.callTool({
       name: "artifact",
-      arguments: { name: "result.txt", text: "D1" },
+      arguments: { name: "result.txt", text: "OK" },
     });
     const parsed = ArtifactResult.parse(JSON.parse(firstText(good)));
     expect(parsed.artifact.path.startsWith(join(dir, "artifacts"))).toBe(true);

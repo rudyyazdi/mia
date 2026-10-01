@@ -39,7 +39,7 @@ export const executionRow = (fields: Partial<ExecutionRow> = {}): ExecutionRow =
   id: "x1",
   task_id: "t1",
   conversation_id: "conv",
-  agent_role: "single",
+  agent_role: "worker",
   runtime_identity: "scripted",
   runtime_conversation_id: "runtime-conv",
   requested_model: "model",

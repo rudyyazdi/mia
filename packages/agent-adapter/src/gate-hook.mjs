@@ -1,7 +1,8 @@
 // Claude Code PreToolUse hook for Mia's tool gate (see gate.ts): posts the hook input to the gate, waits for Mia's
 // decision, and prints it as the hook's permission decision. It appends each hook input to the evidence file. It never
 // lets a call through without Mia: any failure blocks the call (exit code 2), because a hook that merely fails lets
-// the runtime run a tool that needs no permission, such as the manager agent's Task (capability record, D2 addendum).
+// the runtime run a tool that needs no permission, such as the manager agent's Task (see the capability record).
+// capability record: https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456
 // Plain JS so the runtime can execute it without a TS loader.
 import { appendFileSync } from "node:fs";
 import { request } from "node:http";

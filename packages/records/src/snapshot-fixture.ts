@@ -118,7 +118,7 @@ export const snapshotFixture = (
       id: executionId,
       task_id: taskId,
       conversation_id: conversationId,
-      agent_role: "single",
+      agent_role: "worker",
       runtime_identity: "fixture",
       runtime_conversation_id: null,
       requested_model: text("requested-model"),

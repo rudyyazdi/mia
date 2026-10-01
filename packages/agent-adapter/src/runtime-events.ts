@@ -67,7 +67,7 @@ export type RuntimeEvent =
   | { type: "runtime_exit"; code: number | null; signal: NodeJS.Signals | null; at: string };
 
 /**
- * What a manager agent's session (D2) reports besides a turn's events: the runtime's own record of each worker agent
+ * What a manager agent's session reports besides a turn's events: the runtime's own record of each worker agent
  * it starts and ends. `runtimeTaskId` is the id the gate hook also reports as the worker agent's `agent_id`, and
  * `delegationCallId` is the manager agent's delegation call that started it.
  */

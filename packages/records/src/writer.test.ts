@@ -60,7 +60,7 @@ const seedToolCall = (): void => {
     id: "exec-1",
     startedAt: AT,
     taskId: "task-1",
-    agentRole: "single",
+    agentRole: "worker",
     conversationId: "conv-1",
     runtimeIdentity: "claude-code",
     runtimeConversationId: "rt-1",

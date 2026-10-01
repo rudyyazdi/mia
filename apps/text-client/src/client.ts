@@ -286,7 +286,7 @@ export class MiaClient extends EventEmitter {
     );
   }
 
-  /** The interrupt control: every task of the conversation stops (D1: its one task). */
+  /** The interrupt control: every task of the conversation stops. */
   interruptAll(options: SendOptions = {}): Promise<AckPayload> {
     if (!this.conversationId) throw new Error("no conversation");
     return this.send("interrupt_all", { conversation_id: this.conversationId }, options);

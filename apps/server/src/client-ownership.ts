@@ -8,7 +8,7 @@ export type Delivery = (connectionId: string, event: ServerEvent) => void;
 /**
  * Which client owns the active conversation, and which of its connections the conversation's events reach. A start
  * sets both (`activate`); a disconnect clears the connection; while none is active, a client's command adopts its own,
- * if no other client owns the conversation (`adopt`). One conversation, one active client, in D1 and D2 alike.
+ * if no other client owns the conversation (`adopt`). One conversation, one active client.
  */
 export class ClientOwnership {
   connectionId: string | null = null;

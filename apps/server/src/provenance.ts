@@ -51,7 +51,7 @@ export interface ConversationFile {
 /** The files a conversation's provenance retains, read by `readConversationFiles`. */
 export interface ConversationFiles {
   agentPrompt: ConversationFile;
-  /** The worker agent's prompt (D2), or null when the profile defines no worker agent. */
+  /** The worker agent's prompt, or null when it could not be read. */
   workerPrompt: ConversationFile | null;
   architecture: ConversationFile;
 }
@@ -171,7 +171,7 @@ export const planConversationProvenance = (input: {
           logicalName: basename(prompt.path),
         }),
   );
-  // Mia-owned worker-agent instructions (D2), handed to the runtime as the worker agent's definition.
+  // Mia-owned worker-agent instructions, handed to the runtime as the worker agent's definition.
   const worker = files.workerPrompt;
   if (worker !== null)
     items.push(
@@ -377,7 +377,7 @@ export const agentPromptObject = (plan: {
   items: readonly ProvenanceItem<StoredObject>[];
 }): StoredObject | null => retainedObject(plan, "agent_prompt");
 
-/** As `agentPromptObject`, for the worker agent's prompt (D2): null when missing or not configured. */
+/** As `agentPromptObject`, for the worker agent's prompt: null when missing. */
 export const workerPromptObject = (plan: {
   items: readonly ProvenanceItem<StoredObject>[];
 }): StoredObject | null => retainedObject(plan, "worker_prompt");

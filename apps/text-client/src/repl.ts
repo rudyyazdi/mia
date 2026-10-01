@@ -106,7 +106,7 @@ interface Session {
   client: MiaClient;
   deadlines: TextClientDeadlines;
   terminal: Terminal;
-  /** Every running task by id, with what it is doing: D1 runs one at a time, D2's worker agents many. */
+  /** Every running task by id, with what it is doing. */
   tasks: Map<string, string>;
   pendingApprovals: Map<string, EventPayload<"approval_requested">>;
 }

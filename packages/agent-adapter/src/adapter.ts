@@ -4,67 +4,11 @@ import { mkdir, open, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { match } from "ts-pattern";
 import { z } from "zod";
-import { errorMessage, isNotFound, redactString, type RuntimeCancellation } from "@mia/protocol";
-import type { ExecutionStatus } from "@mia/records";
-import type { ApprovalBridge, PermissionHandler } from "./bridge.ts";
+import { errorMessage, isNotFound } from "@mia/protocol";
 import type { RuntimeConfig } from "./config.ts";
-import { untilAborted, withinDeadline } from "./deadline.ts";
-import { prepareLaunch, runtimeEnvironment, type LaunchPlan, type LaunchSetup } from "./launch.ts";
+import { untilAborted } from "./deadline.ts";
+import { runtimeEnvironment, type LaunchSetup } from "./launch.ts";
 import { resolveExecutableSync } from "./resolve-executable.ts";
-import { ClaudeTranslator } from "./claude-translate.ts";
-import type { RuntimeEvent, RuntimeInit, TurnSummary } from "./runtime-events.ts";
-import { spawnRuntime, type RuntimeExit } from "./runtime-process.ts";
-
-export interface TurnOptions {
-  text: string;
-  runtimeConversationId: string;
-  /** True creates the runtime session (`--session-id`); false resumes it (`--resume`), so it must already exist. */
-  firstTurn: boolean;
-  runtimeDir: string;
-  turnIndex: number;
-  /** Prompt file to append, or null to append none; the engine passes the conversation's retained prompt object. */
-  agentPromptFile: string | null;
-  permissionHandler: PermissionHandler;
-  /**
-   * Handles one runtime event and settles once it is handled; it must not reject. The adapter hands over the next
-   * event read from stdout only after the previous one settled, so a slow handler pauses the runtime's output
-   * instead of queueing events, and they are handled in the order the runtime wrote them. Stderr text and the
-   * adapter's own reports arrive whenever they happen, and the exit is handed over after the last stdout event.
-   */
-  onEvent: (event: RuntimeEvent) => Promise<void>;
-}
-
-export interface TurnResult {
-  /** How the runtime process ended; the engine derives the execution's terminal status from it. */
-  status: Exclude<ExecutionStatus, "running">;
-  summary: TurnSummary | null;
-  exit: RuntimeExit | null;
-  error: string | null;
-  streamLogPath: string;
-  hookEvidencePath: string;
-  launch: LaunchPlan["description"];
-  init: RuntimeInit | null;
-  interrupted: boolean;
-  runtimeCancellation: RuntimeCancellation;
-}
-
-export interface TurnHandle {
-  /** The runtime's process id; undefined until the launch files are written and the process has spawned. */
-  readonly pid: number | undefined;
-  readonly result: Promise<TurnResult>;
-  /**
-   * Kill the runtime process group (SIGKILL; see the note on interrupt below). Resolves once exit is observed, or
-   * with "unknown" after EXIT_WAIT_MS; in that case the turn is finished anyway so the task cannot hang. Before the
-   * runtime has spawned it resolves "not_needed" at once, and the runtime is never started. What the kill causes
-   * (the runtime's exit, its held prompts abandoned) reaches the turn's callbacks only after this returns, never
-   * from inside it: the engine calls it while performing a committed transition, where a callback's own record
-   * cannot be committed.
-   */
-  interrupt(): Promise<RuntimeCancellation>;
-}
-
-/** How long the turn result waits for a pending interrupt() to settle after the process exit is observed. */
-const INTERRUPT_SETTLE_MS = 6_000;
 
 /** Printed verbatim as a JSON report by the probe tool, hence snake_case. */
 export interface StaticCapabilities {
@@ -88,6 +32,10 @@ const REQUIRED_FLAGS = [
   "--settings",
   "--permission-mode",
   "--permission-prompt-tool",
+  "--input-format",
+  "--replay-user-messages",
+  "--agents",
+  "--setting-sources",
   "--tools",
   "--append-system-prompt-file",
   "--session-id",
@@ -156,181 +104,7 @@ export const probeStaticCapabilitiesSync = (
 };
 
 /**
- * Claude Code adapter. One turn = one runtime process. The bridge is shared across turns and only
- * has a handler while a turn is active. Each runtime process inherits `env` (see `LaunchInput.env`).
- */
-export class ClaudeCodeAdapter {
-  constructor(
-    readonly config: RuntimeConfig,
-    readonly bridge: ApprovalBridge,
-    private readonly env: NodeJS.ProcessEnv,
-  ) {}
-
-  /**
-   * The handle exists from the start, while the launch files are still being written, so an interruption during
-   * that write reaches the turn: the runtime is then never spawned, and the turn ends killed. A write that fails
-   * ends the turn failed without spawning.
-   */
-  submitTurn(options: TurnOptions): TurnHandle {
-    const launch = prepareLaunch({
-      config: this.config,
-      runtimeDir: options.runtimeDir,
-      bridgeUrl: this.bridge.url,
-      sessionId: options.runtimeConversationId,
-      resume: !options.firstTurn,
-      turnIndex: options.turnIndex,
-      agentPromptFile: options.agentPromptFile,
-      env: this.env,
-    });
-    const streamLogPath = join(
-      options.runtimeDir,
-      `turn-${String(options.turnIndex).padStart(3, "0")}.stream.jsonl`,
-    );
-    let started: TurnHandle | null = null;
-    let cancelled = false;
-    const notStarted = (error: string | null): TurnResult => ({
-      status: cancelled ? "killed" : "failed",
-      summary: null,
-      exit: null,
-      error,
-      streamLogPath,
-      hookEvidencePath: launch.files.hookEvidence,
-      launch: launch.description,
-      init: null,
-      interrupted: cancelled,
-      runtimeCancellation: "not_needed",
-    });
-    const result = writeLaunchFiles(launch.setup).then(
-      () => {
-        if (cancelled) return notStarted(null);
-        started = this.startRuntime({ options, launch, streamLogPath });
-        return started.result;
-      },
-      (error: unknown) => notStarted(`could not write the launch files: ${errorMessage(error)}`),
-    );
-    return {
-      // eslint-disable-next-line no-restricted-syntax -- a getter, so pid reads the runtime spawned after this returns
-      get pid() {
-        return started?.pid;
-      },
-      result,
-      interrupt: async () => {
-        if (started) return started.interrupt();
-        cancelled = true;
-        return "not_needed";
-      },
-    };
-  }
-
-  /** Spawns the runtime for a launch whose files are written, and follows it to the end of the turn. */
-  private startRuntime(input: {
-    options: TurnOptions;
-    launch: LaunchPlan;
-    streamLogPath: string;
-  }): TurnHandle {
-    const { options, launch, streamLogPath } = input;
-    const now = () => new Date().toISOString();
-    const emit = options.onEvent;
-    let init: RuntimeInit | null = null;
-    let summary: TurnSummary | null = null;
-    const translator = new ClaudeTranslator();
-    const runtime = spawnRuntime({
-      command: launch.command,
-      args: launch.args,
-      cwd: launch.cwd,
-      env: launch.env,
-      streamLogPath,
-      launch: launch.description,
-      emit,
-      // The last init and summary the runtime reported become the TurnResult's; every event is forwarded.
-      onMessage: async (message) => {
-        for (const event of translator.translate(message, now)) {
-          if (event.type === "runtime_init") init = event.init;
-          if (event.type === "turn_result") summary = event.summary;
-          await emit(event);
-        }
-      },
-    });
-    if ("spawnFailed" in runtime)
-      return {
-        pid: undefined,
-        result: Promise.resolve({
-          status: "failed",
-          summary: null,
-          exit: null,
-          error: runtime.spawnFailed,
-          streamLogPath,
-          hookEvidencePath: launch.files.hookEvidence,
-          launch: launch.description,
-          init: null,
-          interrupted: false,
-          runtimeCancellation: "not_needed",
-        }),
-        interrupt: async () => "not_needed",
-      };
-
-    this.bridge.setHandler(options.permissionHandler);
-    let interrupted = false;
-    let runtimeCancellation: RuntimeCancellation = "not_needed";
-    runtime.child.stdin?.end(options.text);
-
-    /** Settles (with no value) once a pending interrupt() has recorded its outcome. */
-    const interruptSettled = Promise.withResolvers<undefined>();
-    const done: Promise<TurnResult> = runtime.exited.then(async (exit) => {
-      if (interrupted)
-        await withinDeadline(interruptSettled.promise, INTERRUPT_SETTLE_MS, undefined);
-      this.bridge.setHandler(null);
-      await emit({ type: "runtime_exit", code: exit.code, signal: exit.signal, at: now() });
-      const spawnError = runtime.spawnError();
-      let status: TurnResult["status"];
-      let error: string | null = null;
-      if (interrupted) {
-        status = "killed";
-      } else if (spawnError) {
-        status = "failed";
-        error = `runtime process error: ${spawnError}`;
-      } else if (summary && !summary.isError && exit.code === 0) {
-        status = "completed";
-      } else {
-        status = "failed";
-        error = summary
-          ? `runtime reported ${summary.outcome}${summary.finalText ? `: ${redactString(summary.finalText).slice(0, 500)}` : ""}`
-          : `runtime exited with code ${exit.code} signal ${exit.signal} without a result message`;
-      }
-      return {
-        status,
-        summary,
-        exit,
-        error,
-        streamLogPath,
-        hookEvidencePath: launch.files.hookEvidence,
-        launch: launch.description,
-        init,
-        interrupted,
-        runtimeCancellation,
-      };
-    });
-
-    /**
-     * Interrupt = SIGKILL, deliberately not SIGTERM. Probe evidence (docs/D1/CAPABILITY-RECORD.md): on SIGTERM,
-     * Claude Code 2.1.274 runs a graceful shutdown that closes its MCP connections, treats the closure as an
-     * expired session and re-sends the in-flight tool call once, bypassing the permission tool. SIGKILL leaves
-     * no user-space code to retry, so no new consequential dispatch can happen after the gate closes.
-     */
-    const interrupt = async (): Promise<RuntimeCancellation> => {
-      if (runtime.hasExited()) return runtimeCancellation;
-      interrupted = true;
-      runtimeCancellation = await runtime.kill();
-      interruptSettled.resolve(undefined);
-      return runtimeCancellation;
-    };
-
-    return { pid: runtime.child.pid, result: done, interrupt };
-  }
-}
-
-/**
- * Creates the directories and files a launch plan's invocation refers to (see `prepareLaunch`), owner-only. It
+ * Creates the directories and files a session's invocation refers to (see `prepareSession`), owner-only. It
  * settles only after every write has: a conversation's turns share these file names, and a turn does not end before
  * its writes do, so no write of an earlier turn can land over a later turn's settings.
  */

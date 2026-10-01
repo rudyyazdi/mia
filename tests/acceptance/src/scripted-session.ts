@@ -1,67 +1,40 @@
-import type { RuntimeCancellation } from "@mia/protocol";
+import { join } from "node:path";
 import type {
   GateDecision,
-  GateHandler,
   SessionEvent,
   SessionHandle,
   SessionOptions,
   SessionResult,
 } from "@mia/agent-adapter";
-import type { GateHost, SessionRunner } from "@mia/server";
+import type { RuntimeCancellation } from "@mia/protocol";
+import type { SessionRunner } from "@mia/server";
 
-// A scripted substitute for the manager agent's runtime session and the gate its hook asks (D2): the test plays the
-// runtime, reporting turns and worker agents and asking the gate about calls exactly as the real session and hook do.
+// A scripted substitute for the runtime (the only thing acceptance tests fake): the test plays the manager agent's
+// session, reporting turns and worker agents and asking the engine about calls exactly as the real session and its
+// gate hook do.
 
 const at = () => new Date().toISOString();
 
-/** The tool gate the engine decides through, asked by the test instead of a hook. */
-export class ScriptedGate implements GateHost {
-  readonly url = "http://127.0.0.1:0/gate/scripted";
-  private handler: GateHandler | null = null;
-
-  setHandler(handler: GateHandler | null): void {
-    this.handler = handler;
-  }
-
-  /** Ask the gate about a call, as the hook would; `abandon` aborting stands for the hook going away. */
-  ask(input: {
-    toolName: string;
-    input?: unknown;
-    toolUseId: string;
-    agentId: string | null;
-    abandon?: AbortSignal;
-  }): Promise<GateDecision> {
-    const handler = this.handler;
-    if (!handler) return Promise.resolve({ behavior: "deny", message: "no gate handler" });
-    return handler({
-      toolName: input.toolName,
-      input: input.input ?? {},
-      toolUseId: input.toolUseId,
-      agentId: input.agentId,
-      agentType: input.agentId === null ? null : "mia-worker",
-      raw: {},
-      receivedAt: at(),
-      abandoned: input.abandon ?? new AbortController().signal,
-    });
-  }
-}
-
 /** One scripted session: the messages the engine sent it, and the controls the test drives it with. */
 export class ScriptedSession {
-  readonly messages: string[] = [];
+  readonly messages: { text: string; runtimeMessageId: string }[] = [];
   readonly handle: SessionHandle;
   private readonly ended = Promise.withResolvers<SessionResult>();
   private readonly messageWaiters: (() => void)[] = [];
   private open = true;
   stopped = false;
+  /** What `stop` reports once called; a test sets "unknown" to stand for a kill whose exit was never seen. */
+  cancellation: RuntimeCancellation = "forced_kill";
+  /** False holds the killed session's exit until the test calls `exitAfterStop`, as a slow-dying runtime would. */
+  exitsOnStop = true;
+  private exitStopped: (() => void) | null = null;
 
   constructor(readonly options: SessionOptions) {
-    const result: SessionResult = {
-      status: "ended",
+    const result: Omit<SessionResult, "status" | "cancellation"> = {
       exit: { code: 0, signal: null },
       error: null,
-      streamLogPath: `${options.runtimeDir}/scripted.stream.jsonl`,
-      hookEvidencePath: `${options.runtimeDir}/scripted.hooks.jsonl`,
+      streamLogPath: join(options.runtimeDir, "scripted.stream.jsonl"),
+      hookEvidencePath: join(options.runtimeDir, "scripted.hooks.jsonl"),
       launch: {
         model: "scripted-model",
         effort: "medium",
@@ -75,27 +48,36 @@ export class ScriptedSession {
         mcp_config: {},
       },
     };
+    this.finish = (status) => this.ended.resolve({ ...result, status, cancellation: "not_needed" });
     this.handle = {
       pid: 4242,
       result: this.ended.promise,
-      send: (text) => {
+      send: (text, runtimeMessageId) => {
         if (!this.open) return false;
-        this.messages.push(text);
+        this.messages.push({ text, runtimeMessageId });
         for (const wake of this.messageWaiters.splice(0)) wake();
         return true;
       },
       close: () => {
         this.open = false;
       },
-      stop: async (): Promise<RuntimeCancellation> => {
+      stop: async () => {
         this.stopped = true;
         this.open = false;
+        const { cancellation } = this;
+        const exit = () =>
+          this.ended.resolve({ ...result, status: "killed", exit: null, cancellation });
         // As the real session: the kill's consequences arrive only after `stop` returns.
-        queueMicrotask(() => this.ended.resolve({ ...result, status: "killed", exit: null }));
-        return "forced_kill";
+        if (this.exitsOnStop) queueMicrotask(exit);
+        else this.exitStopped = exit;
+        return cancellation;
       },
     };
-    this.finish = (status) => this.ended.resolve({ ...result, status });
+  }
+
+  /** Let a session held by `exitsOnStop = false` exit now that it was stopped. */
+  exitAfterStop(): void {
+    this.exitStopped?.();
   }
 
   /** End the session on its own, as the runtime exiting after stdin closed or failing. */
@@ -108,19 +90,24 @@ export class ScriptedSession {
       this.messageWaiters.push(() => next.resolve(undefined));
       await next.promise;
     }
-    return this.messages;
+    return this.messages.map((message) => message.text);
   }
 
   emit(event: SessionEvent): Promise<void> {
     return this.options.onEvent(event);
   }
 
-  beginTurn(): Promise<void> {
-    return this.emit({
+  /** Begin a turn, and with `takes`, take the `takes`th message sent (0 for the first), as the runtime replays it. */
+  async beginTurn(takes?: number): Promise<void> {
+    await this.emit({
       type: "runtime_init",
       init: { model: "scripted-model", evidence: {} },
       at: at(),
     });
+    if (takes === undefined) return;
+    const message = this.messages[takes];
+    if (!message) throw new Error(`no message ${takes} was sent`);
+    await this.emit({ type: "input_taken", runtimeMessageId: message.runtimeMessageId, at: at() });
   }
 
   reply(text: string): Promise<void> {
@@ -135,16 +122,28 @@ export class ScriptedSession {
     });
   }
 
-  startWorker(runtimeTaskId: string, description: string): Promise<void> {
-    return this.emit({
-      type: "worker_started",
-      runtimeTaskId,
-      delegationCallId: `toolu_delegate_${runtimeTaskId}`,
-      description,
-      prompt: description,
-      background: true,
-      at: at(),
+  /** The manager agent asks to delegate to Mia's worker agent in the background; allowed, the runtime starts it. */
+  async delegate(
+    runtimeTaskId: string,
+    description = `task ${runtimeTaskId}`,
+  ): Promise<GateDecision> {
+    const decision = await this.ask({
+      toolName: "Agent",
+      input: { subagent_type: "mia-worker", run_in_background: true, prompt: description },
+      toolUseId: `toolu_delegate_${runtimeTaskId}`,
+      agentId: null,
     });
+    if (decision.behavior === "allow")
+      await this.emit({
+        type: "worker_started",
+        runtimeTaskId,
+        delegationCallId: `toolu_delegate_${runtimeTaskId}`,
+        description,
+        prompt: description,
+        background: true,
+        at: at(),
+      });
+    return decision;
   }
 
   endWorker(runtimeTaskId: string, status = "completed"): Promise<void> {
@@ -158,12 +157,37 @@ export class ScriptedSession {
     });
   }
 
-  toolResult(result: { runtimeCallId: string; workerTaskId: string; content: unknown }) {
+  /** Ask the engine about a call, as the gate hook would; `abandon` aborting stands for the hook going away. */
+  ask(input: {
+    toolName: string;
+    input?: unknown;
+    toolUseId: string;
+    agentId: string | null;
+    abandon?: AbortSignal;
+  }): Promise<GateDecision> {
+    return this.options.decide({
+      toolName: input.toolName,
+      input: input.input ?? {},
+      toolUseId: input.toolUseId,
+      agentId: input.agentId,
+      agentType: input.agentId === null ? null : "mia-worker",
+      raw: {},
+      receivedAt: at(),
+      abandoned: input.abandon ?? new AbortController().signal,
+    });
+  }
+
+  toolResult(result: {
+    runtimeCallId: string;
+    workerTaskId: string;
+    content: unknown;
+    isError?: boolean;
+  }): Promise<void> {
     return this.emit({
       type: "tool_result",
       runtimeCallId: result.runtimeCallId,
       parentCallId: `toolu_delegate_${result.workerTaskId}`,
-      isError: false,
+      isError: result.isError ?? false,
       content: result.content,
       raw: null,
       at: at(),

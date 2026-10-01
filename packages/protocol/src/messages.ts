@@ -233,7 +233,6 @@ const eventPayloads = {
     conversation_id: IdSchema,
     task_id: IdSchema,
     execution_id: IdSchema,
-    execution_epoch: z.number().int(),
     text: z.string(),
     /** D2: the turn whose manager agent delegated this task to a worker agent. */
     turn_id: IdSchema.optional(),
@@ -258,12 +257,6 @@ const eventPayloads = {
     status: TurnStatusSchema,
     error: z.string().optional(),
   }),
-  text_delta: z.object({
-    conversation_id: IdSchema,
-    task_id: IdSchema,
-    execution_id: IdSchema,
-    text: z.string(),
-  }),
   tool_call: z.object({
     conversation_id: IdSchema,
     task_id: IdSchema,
@@ -282,7 +275,6 @@ const eventPayloads = {
     tool_call_id: IdSchema,
     runtime_call_id: z.string(),
     binding_revision: z.number().int(),
-    execution_epoch: z.number().int(),
     tool_identity: z.string(),
     intended_action: z.string(),
     redacted_arguments: z.unknown(),
@@ -300,7 +292,6 @@ const eventPayloads = {
   interruption_requested: z.object({
     conversation_id: IdSchema,
     task_id: IdSchema,
-    execution_epoch: z.number().int(),
   }),
   interruption_outcome: z.object({
     conversation_id: IdSchema,
@@ -355,7 +346,6 @@ export const ServerEventSchema = z.discriminatedUnion("type", [
   serverEvent("turn_started"),
   serverEvent("reply_delta"),
   serverEvent("turn_finished"),
-  serverEvent("text_delta"),
   serverEvent("tool_call"),
   serverEvent("approval_requested"),
   serverEvent("approval_resolved"),

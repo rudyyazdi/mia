@@ -1,5 +1,7 @@
 import { conversationDirectory } from "@mia/records";
-import type { Draft } from "./draft.ts";
+import type { ConversationDraft } from "./conversation-draft.ts";
+import type { ConversationState } from "./conversation-state.ts";
+import type { Origin } from "./engine-effects.ts";
 import { provenanceLinks, provenanceRecords, type NamedProvenancePlan } from "./provenance.ts";
 
 /** The ids a conversation start records, drawn before it is decided. */
@@ -11,7 +13,7 @@ export interface StartIds {
   captured: string;
 }
 
-/** What every conversation's state begins with, whichever engine runs it. */
+/** What a conversation's state begins with: what its start's records name. */
 export interface StartedConversation {
   id: string;
   runtimeConversationId: string;
@@ -21,21 +23,21 @@ export interface StartedConversation {
 
 /**
  * Build a conversation's start into `draft`: its provenance rows, the conversation that names them and its links to
- * them, the close of the conversation it replaces, the state `stateOf` builds from the new conversation, `activate`,
- * then its provenance_recorded and conversation_started events, and in debug mode captured_in_debug_mode, all in one
- * commit. D1's and D2's starts differ only in the state and the activation they build.
+ * them, the close of the conversation it replaces, the state `stateOf` builds from the new conversation, its
+ * activation for `start.origin`'s client, then its provenance_recorded and conversation_started events, and in debug
+ * mode captured_in_debug_mode, all in one commit.
  */
-export const buildConversationStart = <State extends { readonly id: string }, Effect>(input: {
-  draft: Draft<State, Effect>;
+export const buildConversationStart = (input: {
+  draft: ConversationDraft;
   start: {
+    origin: Origin;
     ids: StartIds;
     provenance: NamedProvenancePlan;
     closes: string | null;
     conversationsRoot: string;
     debugMode: boolean;
   };
-  stateOf: (conversation: StartedConversation) => State;
-  activate: Effect;
+  stateOf: (conversation: StartedConversation) => ConversationState;
 }): void => {
   const { draft, start } = input;
   const { ids, provenance: plan } = start;
@@ -66,7 +68,7 @@ export const buildConversationStart = <State extends { readonly id: string }, Ef
       }),
     }),
   );
-  draft.effect(input.activate);
+  draft.effect({ kind: "activate_conversation", origin: start.origin });
   draft.record("provenance_recorded", provenance, { id: ids.provenanceRecorded });
   draft.emit(
     {

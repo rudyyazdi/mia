@@ -24,12 +24,26 @@ const summaryOf = (message: ResultMessage): TurnSummary => ({
   evidence: message,
 });
 
+/** How many reported proposals a translator remembers; see `ClaudeTranslator`. */
+export const MAX_REMEMBERED_PROPOSALS = 1024;
+
 /**
  * Translates Claude Code stream-json messages into runtime events. It owns one piece of turn state:
  * a tool call's complete proposal is reported once, however many assistant messages repeat it.
  */
 export class ClaudeTranslator {
+  /**
+   * The calls whose complete proposal was reported, newest last, bounded by MAX_REMEMBERED_PROPOSALS: the runtime
+   * repeats a call only in the assistant messages right after it, so forgetting the oldest loses nothing.
+   */
   readonly #completedProposals = new Set<string>();
+
+  #remember(id: string): void {
+    this.#completedProposals.add(id);
+    if (this.#completedProposals.size <= MAX_REMEMBERED_PROPOSALS) return;
+    const oldest = this.#completedProposals.values().next();
+    if (!oldest.done) this.#completedProposals.delete(oldest.value);
+  }
 
   /** `now` stamps each event as it is produced. */
   translate(message: RuntimeMessage, now: () => string): RuntimeEvent[] {
@@ -76,7 +90,7 @@ export class ClaudeTranslator {
         for (const block of assistantMessage.message.content) {
           if (block.type !== "tool_use" || !block.id || !block.name) continue;
           if (this.#completedProposals.has(block.id)) continue;
-          this.#completedProposals.add(block.id);
+          this.#remember(block.id);
           events.push({
             type: "tool_proposed",
             runtimeCallId: block.id,
@@ -90,6 +104,10 @@ export class ClaudeTranslator {
         return events;
       })
       .with({ type: "user" }, (userMessage): RuntimeEvent[] => {
+        if (userMessage.isReplay === true)
+          return userMessage.uuid === undefined
+            ? []
+            : [{ type: "input_taken", runtimeMessageId: userMessage.uuid, at: now() }];
         const content = userMessage.message.content;
         if (!Array.isArray(content)) return [];
         return content.flatMap((block): RuntimeEvent[] =>

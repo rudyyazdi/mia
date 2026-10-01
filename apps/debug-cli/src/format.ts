@@ -26,15 +26,14 @@ export const formatConversationHeader = (snapshot: ConversationSnapshot): string
     ),
     ...snapshot.tables.executions.map(
       (execution) =>
-        `execution ${execution.id} task=${execution.task_id} epoch=${execution.execution_epoch} model requested=${execution.requested_model} reported=${execution.reported_model ?? "unreported"} effort requested=${execution.requested_effort} reported=${execution.reported_effort ?? "unverified"} status=${execution.status}`,
+        `execution ${execution.id} task=${execution.task_id ?? "none"} role=${execution.agent_role} model requested=${execution.requested_model} reported=${execution.reported_model ?? "unreported"} effort requested=${execution.requested_effort} reported=${execution.reported_effort ?? "unverified"} status=${execution.status}`,
     ),
   ];
 };
 
 export const formatTask = (task: TaskView): string[] => [
   `\n== task ${task.id} [${task.status}] ${task.created_at}`,
-  `user> ${task.text}`,
-  `agent${task.partial ? " (partial)" : ""}> ${task.assistant_text || "(no text)"}`,
+  `delegated${task.partial ? " (did not complete)" : ""}> ${task.text}`,
   ...task.tool_calls.map(
     (call) =>
       `  tool ${call.tool_identity} call=${call.runtime_call_id} rev=${call.binding_revision} policy=${call.policy} status=${call.status}${call.detail ? ` (${call.detail})` : ""} approvals=${JSON.stringify(call.approvals.map((approval) => `${approval.id}:${approval.status}`))}`,

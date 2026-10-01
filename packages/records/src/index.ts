@@ -29,12 +29,14 @@ export {
   listConversations,
   snapshotConversation,
   taskViews,
+  turnViews,
 } from "./queries.ts";
 export type {
   ConversationSnapshot,
   ConversationSummary,
   DiagnosticsView,
   TaskView,
+  TurnView,
 } from "./queries.ts";
 export { readConversationProvenance } from "./provenance-read.ts";
 export type { ProvenanceContent } from "./provenance-read.ts";

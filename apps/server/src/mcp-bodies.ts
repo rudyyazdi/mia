@@ -5,7 +5,7 @@ import { redactValue } from "@mia/protocol";
 import type { McpContent, McpEventType } from "@mia/records";
 
 /**
- * The most a body log may hold for Mia to read it, at a tool result or at turn end. The fixture's log only grows,
+ * The most a body log may hold for Mia to read it, at a tool result or at session end. The fixture's log only grows,
  * and each read is the whole file, so the cap bounds the memory a read costs and the parse each call it serves
  * costs; past it, calls record why their bodies are missing instead.
  */
@@ -15,20 +15,17 @@ export const MAX_BODY_LOG_BYTES = 16 * 1024 * 1024;
  * One MCP message of a call as debug mode records it: its body, redacted, or why no body was recorded. A call
  * records every line its tool-use id has, in log order (a runtime that re-sent the call has two requests), and a
  * direction with no line records one `unrecorded`. Bodies are read at a call's tool result, or, for a released
- * call whose result never arrives (its turn interrupted or its runtime gone mid-call), at its turn's end, where
- * the call itself ends `unknown`.
+ * call whose result never arrives (its runtime gone mid-call), at its session's end, where the call itself ends
+ * `unknown`.
  */
 export type McpBody = { direction: BodyDirection } & McpContent;
 
 /**
  * When a call's bodies are read. At its tool result a missing line means the log has none: the fixture writes a
- * request's line before handling it and a response's before sending it. At turn end the server may still be
- * handling a call the runtime gave up on, so a missing line only means none was written yet.
+ * request's line before handling it and a response's before sending it. At session end the server may still
+ * be handling a call the runtime gave up on, so a missing line only means none was written yet.
  */
-export type BodyReadPoint = "tool_result" | "turn_end";
-
-/** One MCP message debug mode records for a call, with the id of the event recording it, drawn at the boundary. */
-export type McpBodyRecord = McpBody & { eventId: string };
+export type BodyReadPoint = "tool_result" | "session_end";
 
 /** The event that records a message of each direction. */
 export const MCP_BODY_EVENT: Record<BodyDirection, McpEventType> = {
@@ -39,7 +36,10 @@ export const MCP_BODY_EVENT: Record<BodyDirection, McpEventType> = {
 const missingReason = (direction: BodyDirection, readAt: BodyReadPoint): string =>
   match(readAt)
     .with("tool_result", () => `the body log has no ${direction} for this call`)
-    .with("turn_end", () => `the body log had no ${direction} for this call when its turn ended`)
+    .with(
+      "session_end",
+      () => `the body log had no ${direction} for this call when its session ended`,
+    )
     .exhaustive();
 
 const DIRECTIONS: readonly BodyDirection[] = ["request", "response"];

@@ -33,7 +33,7 @@ const LAYERS = [
   // Layer 4: tests are the top layer and forbid nothing, so they get no override.
   {
     files: ["tests/*/**"],
-    workspaces: ["@mia/acceptance", "@mia/fake-claude"],
+    workspaces: ["@mia/acceptance"],
     mayImportAnything: true,
   },
 ];

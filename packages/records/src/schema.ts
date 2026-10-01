@@ -15,7 +15,7 @@ import type {
   TurnStatus,
 } from "@mia/protocol";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Logical records from docs/D1/CONVERSATION-RECORDS.md. Foreign keys are enforced per connection (see catalog.ts). */
 export const SCHEMA_SQL = `
@@ -141,7 +141,6 @@ CREATE TABLE IF NOT EXISTS executions (
   reported_effort TEXT,
   effort_evidence TEXT,
   provenance_set_id TEXT REFERENCES provenance_sets(id),
-  execution_epoch INTEGER NOT NULL,
   status TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT,
@@ -223,7 +222,6 @@ CREATE INDEX IF NOT EXISTS tool_calls_task ON tool_calls(task_id, proposal_event
 CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY,
   tool_call_id TEXT NOT NULL REFERENCES tool_calls(id),
-  execution_epoch INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','invalidated','expired')),
   reason TEXT,
   requesting_event_id TEXT REFERENCES events(id),
@@ -231,7 +229,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   decision_client_id TEXT,
   requested_at TEXT NOT NULL,
   consumed_at TEXT,
-  UNIQUE(tool_call_id, execution_epoch)
+  UNIQUE(tool_call_id)
 );
 CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(status, id) WHERE status = 'pending';
 
@@ -279,7 +277,6 @@ CREATE TABLE IF NOT EXISTS artifact_links (
   CHECK (relation <> 'event_payload' OR event_id IS NOT NULL),
   CHECK (relation <> 'tool_result' OR tool_call_id IS NOT NULL),
   CHECK (relation <> 'diagnostic' OR diagnostic_id IS NOT NULL),
-  CHECK (relation <> 'runtime_transcript' OR task_id IS NOT NULL),
   FOREIGN KEY(conversation_id, task_id) REFERENCES tasks(conversation_id, id)
 );
 CREATE INDEX IF NOT EXISTS artifact_links_conversation ON artifact_links(conversation_id, artifact_id);
@@ -375,7 +372,10 @@ export type JournalEventType =
   | "tool_unattributed"
   | "lease_acquired"
   | "lease_released"
-  | "stop_requested";
+  | "stop_requested"
+  | "message_taken"
+  | "turn_reports_tasks"
+  | "delegation_unstarted";
 export type ProvenanceRole =
   | "agent_prompt"
   | "worker_prompt"
@@ -516,7 +516,6 @@ export interface ExecutionRow {
   reported_effort: string | null;
   effort_evidence: string | null;
   provenance_set_id: string | null;
-  execution_epoch: number;
   status: ExecutionStatus;
   started_at: string;
   ended_at: string | null;
@@ -583,7 +582,6 @@ export interface ToolCallRow {
 export interface ApprovalRow {
   id: string;
   tool_call_id: string;
-  execution_epoch: number;
   status: ApprovalStatus;
   reason: string | null;
   requesting_event_id: string | null;

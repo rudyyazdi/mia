@@ -22,7 +22,7 @@ const ask = (url: string, body: string, signal?: AbortSignal) =>
   }).then((response) => response.json());
 
 const call = JSON.stringify({
-  tool_name: "mcp__d1__change",
+  tool_name: "mcp__fixture__change",
   tool_input: { delta: 1 },
   tool_use_id: "toolu_1",
   agent_id: "a1",
@@ -44,7 +44,7 @@ describe("ToolGate", () => {
     });
     expect(await ask(gate.url, call)).toEqual({ behavior: "allow" });
     expect(seen[0]).toMatchObject({
-      toolName: "mcp__d1__change",
+      toolName: "mcp__fixture__change",
       input: { delta: 1 },
       toolUseId: "toolu_1",
       agentId: "a1",

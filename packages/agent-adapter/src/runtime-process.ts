@@ -1,13 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { errorMessage, redactString, type RuntimeCancellation } from "@mia/protocol";
-import { withinDeadline } from "./deadline.ts";
-import type { LaunchPlan } from "./launch.ts";
+import { untilAborted } from "./deadline.ts";
+import type { SessionPlan } from "./launch.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
 import { parseStreamLine, redactLine, type RuntimeMessage } from "./stream.ts";
 import { retainStdout } from "./transcript.ts";
-
-/** How long to wait for the killed process to exit before reporting the cancellation outcome as unknown. */
-export const EXIT_WAIT_MS = 5_000;
 
 export interface RuntimeExit {
   code: number | null;
@@ -24,11 +21,12 @@ export interface RuntimeProcess {
   /** The process has exited or been killed by a signal. */
   hasExited(): boolean;
   /**
-   * SIGKILLs the runtime's whole process group and waits for its exit: "forced_kill" once observed, or "unknown"
-   * after EXIT_WAIT_MS, when the process is abandoned and its output no longer read so nothing waits on it forever.
+   * SIGKILLs the runtime's whole process group and waits for its exit: "forced_kill" once observed, or "unknown" once
+   * `deadline` aborts first, when the process is abandoned and its output no longer read so nothing waits on it
+   * forever. The entry point builds the deadline.
    * SIGKILL, deliberately not SIGTERM: see `TurnHandle.interrupt` for the runtime behaviour this avoids.
    */
-  kill(): Promise<RuntimeCancellation>;
+  kill(deadline: AbortSignal): Promise<RuntimeCancellation>;
 }
 
 /**
@@ -42,7 +40,7 @@ export const spawnRuntime = (input: {
   cwd: string;
   env: Record<string, string>;
   streamLogPath: string;
-  launch: LaunchPlan["description"];
+  launch: SessionPlan["description"];
   onMessage: (message: RuntimeMessage) => Promise<void>;
   emit: (event: RuntimeEvent) => Promise<void>;
 }): RuntimeProcess | { spawnFailed: string } => {
@@ -154,12 +152,12 @@ export const spawnRuntime = (input: {
     exited: exitSettled.promise,
     spawnError: () => spawnError,
     hasExited: () => child.exitCode !== null || child.signalCode !== null,
-    kill: async () => {
+    kill: async (deadline) => {
       signalGroup();
-      const outcome = await withinDeadline(
-        processGone.promise.then(() => "exited" as const),
-        EXIT_WAIT_MS,
-        "timeout" as const,
+      const outcome = await untilAborted(
+        () => processGone.promise.then(() => "exited" as const),
+        deadline,
+        () => "timeout" as const,
       );
       if (outcome === "exited") return "forced_kill";
       // Do not let a stuck process hold its turn or session open forever: finish it and report uncertainty.

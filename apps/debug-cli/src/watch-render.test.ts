@@ -6,10 +6,10 @@ import { eventRow, executionRow, taskRow, toolCallRow } from "./watch-fixture.ts
 
 const SECRET = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-/** A capture whose d1 server, where the fixture's calls go, retained `d1` of its body log. */
-const capture = (debugMode: boolean, d1: RetainedBodyLog = "body_log"): Capture => ({
+/** A capture whose fixture server, where the fixture's calls go, retained `retained` of its body log. */
+const capture = (debugMode: boolean, retained: RetainedBodyLog = "body_log"): Capture => ({
   debugMode,
-  bodyLogServers: { status: "known", servers: new Map([["d1", d1]]) },
+  bodyLogServers: { status: "known", servers: new Map([["fixture", retained]]) },
 });
 
 describe("watch views", () => {
@@ -49,12 +49,12 @@ describe("watch views", () => {
 
   it("marks a call that did not run, with the engine's reason, on its collapsed line", () => {
     const view = toolCallView(
-      toolCallRow({ status: "denied", detail: "Mia denied mcp__d1__forbidden by policy" }),
+      toolCallRow({ status: "denied", detail: "Mia denied mcp__fixture__forbidden by policy" }),
       [],
       capture(false),
     );
     expect(view.summary).toContain("denied");
-    expect(view.summary).toContain("✗ Mia denied mcp__d1__forbidden by policy");
+    expect(view.summary).toContain("✗ Mia denied mcp__fixture__forbidden by policy");
   });
 
   it("marks a fixture call's MCP bodies as not recorded when the conversation was captured with debug mode off", () => {
@@ -77,7 +77,7 @@ describe("watch views", () => {
   it("tells a server from another only by its whole name", () => {
     const call = toolCallRow({ tool_identity: "mcp__d1x__read", dispatch_event_id: "e5" });
     const servers = new Map<string, RetainedBodyLog>([
-      ["d1", "body_log"],
+      ["fixture", "body_log"],
       ["d1x", "no_body_log"],
     ]);
     const view = toolCallView(call, [], {

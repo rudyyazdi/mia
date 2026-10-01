@@ -1,8 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   ApprovalBridge,
-  ClaudeCodeAdapter,
   ClaudeCodeSessions,
   ToolGate,
   loadProfileSync,
@@ -15,8 +15,7 @@ import { errorMessage } from "@mia/protocol";
 import { Catalog, RecordWriter, newId, type NewId } from "@mia/records";
 import { collectArtifact, type ArtifactCollector } from "./artifact-collector.ts";
 import { collectBuildInfoSync } from "./build-info.ts";
-import { DelegationEngine, type GateHost, type SessionRunner } from "./delegation-engine.ts";
-import { Engine, type TurnRunner } from "./engine.ts";
+import { Engine, type SessionRunner } from "./engine.ts";
 import { startGateway, type GatewayHandle } from "./gateway.ts";
 import type { ServerIdentity } from "./provenance.ts";
 
@@ -24,7 +23,7 @@ export interface MiaServer {
   profile: Profile;
   gateway: GatewayHandle;
   /** D1's engine, or D2's when the profile defines a worker agent. */
-  engine: Engine | DelegationEngine;
+  engine: Engine;
   catalog: Catalog;
   bridge: ApprovalBridge;
   /**
@@ -52,6 +51,18 @@ export const SHUTDOWN_TURN_WAIT_MS = 10_000;
  */
 export const EVIDENCE_READ_TIMEOUT_MS = 10_000;
 
+/**
+ * The stop deadline an entry point should give `startServer`: how long a killed session may take to be seen exiting
+ * before its cancellation is recorded unknown and the session is given up on.
+ */
+export const STOP_WAIT_MS = 5_000;
+
+/**
+ * The attribution deadline an entry point should give `startServer`: how long a worker agent's call may wait for the
+ * runtime's report of that worker agent's start, which can trail the call by the time stdout takes to be read.
+ */
+export const ATTRIBUTION_WAIT_MS = 5_000;
+
 export const SOURCE_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 
 const resolveProfileSync = (input: {
@@ -67,19 +78,19 @@ const resolveProfileSync = (input: {
 export const startServer = async (input: {
   profilePath?: string;
   profile?: Profile;
-  adapter?: TurnRunner;
-  /** D2: runs the manager agent's sessions; defaults to `ClaudeCodeSessions`. A test injects a scripted one. */
+  /** Runs the manager agent's sessions; defaults to `ClaudeCodeSessions`. A test injects a scripted runtime. */
   sessions?: SessionRunner;
-  /** D2: the tool gate the sessions' hook asks; defaults to a `ToolGate` the server starts. */
-  gate?: GateHost;
   log?: (message: string) => void;
   /**
-   * A fresh deadline for each turn's evidence reads, and for each conversation start's reads and stores. An entry
-   * point passes `() => AbortSignal.timeout(EVIDENCE_READ_TIMEOUT_MS)`; a test passes a signal it aborts itself.
+   * Fresh deadlines, built by the entry point (a test passes signals it aborts itself): for each batch of evidence
+   * reads and stores (`EVIDENCE_READ_TIMEOUT_MS`), for observing a killed session exit (`STOP_WAIT_MS`), and for a
+   * worker agent's call waiting for its start's report (`ATTRIBUTION_WAIT_MS`).
    */
   evidenceReadDeadline: () => AbortSignal;
+  stopDeadline: () => AbortSignal;
+  attributionDeadline: () => AbortSignal;
   /**
-   * Reads a finished turn's evidence and a starting conversation's prompt and architecture document; defaults to
+   * Reads a session's evidence and a starting conversation's prompts and architecture document; defaults to
    * `readRuntimeFile`. A test injects one that holds a read.
    */
   readEvidence?: RuntimeFileReader;
@@ -89,6 +100,8 @@ export const startServer = async (input: {
   now?: () => Date;
   /** Names what the engine records (see `EngineDeps.newId`); defaults to `newId`. A test injects one that checks when it is called. */
   newId?: NewId;
+  /** The UUID each message is sent to the runtime under; defaults to `randomUUID`. */
+  newRuntimeMessageId?: () => string;
   /** Debug mode (see `EngineDeps.debugMode`); off unless the entry point was asked for it. */
   debugMode?: boolean;
   /**
@@ -117,37 +130,27 @@ export const startServer = async (input: {
     const now = input.now ?? (() => new Date());
     const bridge = new ApprovalBridge({ logFile: input.env.MIA_MCP_HTTP_LOG });
     await bridge.start();
-    // Started only for a delegating profile without a test's own gate; closed with the bridge.
-    const ownGate =
-      profile.runtime.workerAgent !== null && input.gate === undefined ? new ToolGate() : null;
+    const gate = new ToolGate();
     try {
-      await ownGate?.start();
-      const common = {
+      await gate.start();
+      const engine = new Engine({
         profile,
         catalog,
         writer,
         identity,
+        sessions:
+          input.sessions ?? new ClaudeCodeSessions(profile.runtime, { gate, bridge }, input.env),
         evidenceReadDeadline: input.evidenceReadDeadline,
+        stopDeadline: input.stopDeadline,
+        attributionDeadline: input.attributionDeadline,
         readEvidence: input.readEvidence ?? readRuntimeFile,
+        collectArtifact: input.collectArtifact ?? collectArtifact,
         newId: input.newId ?? newId,
+        newRuntimeMessageId: input.newRuntimeMessageId ?? randomUUID,
         now,
         debugMode: input.debugMode ?? false,
         log,
-      };
-      const gate = input.gate ?? ownGate;
-      const engine =
-        gate === null
-          ? new Engine({
-              ...common,
-              adapter: input.adapter ?? new ClaudeCodeAdapter(profile.runtime, bridge, input.env),
-              collectArtifact: input.collectArtifact ?? collectArtifact,
-            })
-          : new DelegationEngine({
-              ...common,
-              sessions:
-                input.sessions ?? new ClaudeCodeSessions(profile.runtime, bridge, input.env),
-              gate,
-            });
+      });
       const gateway = await startGateway({
         host: profile.server.host,
         port: profile.server.port,
@@ -174,7 +177,7 @@ export const startServer = async (input: {
         // closes after the turn so the interruption still reaches the client.
         await step(() => engine.shutdown(turnWait));
         await step(() => gateway.close(turnWait));
-        await step(() => ownGate?.close());
+        await step(() => gate.close());
         await step(() => bridge.close());
         await step(() => catalog.close());
         if (errors.length > 0)
@@ -193,7 +196,7 @@ export const startServer = async (input: {
         close: (turnWait) => (shutdownStarted ??= shutdown(turnWait)),
       };
     } catch (error) {
-      await ownGate?.close();
+      await gate.close();
       await bridge.close();
       throw error;
     }

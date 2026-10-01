@@ -30,7 +30,7 @@ describe("approval bridge", () => {
     const mcpClient = await client();
     const response = await mcpClient.callTool({
       name: BRIDGE_TOOL_NAME,
-      arguments: { tool_name: "mcp__d1__change", input: { delta: 1 }, tool_use_id: "toolu_1" },
+      arguments: { tool_name: "mcp__fixture__change", input: { delta: 1 }, tool_use_id: "toolu_1" },
     });
     expect(decisionOf(response)).toMatchObject({ behavior: "deny" });
     await mcpClient.close();
@@ -45,7 +45,7 @@ describe("approval bridge", () => {
     const mcpClient = await client();
     const response = await mcpClient.callTool({
       name: BRIDGE_TOOL_NAME,
-      arguments: { tool_name: "mcp__d1__change", input: { delta: 1 }, tool_use_id: "toolu_2" },
+      arguments: { tool_name: "mcp__fixture__change", input: { delta: 1 }, tool_use_id: "toolu_2" },
     });
     expect(decisionOf(response)).toEqual({ behavior: "allow" });
     bridge.setHandler(null);
@@ -68,7 +68,7 @@ describe("approval bridge", () => {
     const mcpClient = await client();
     const pending = mcpClient.callTool({
       name: BRIDGE_TOOL_NAME,
-      arguments: { tool_name: "mcp__d1__slow", input: {}, tool_use_id: "toolu_3" },
+      arguments: { tool_name: "mcp__fixture__slow", input: {}, tool_use_id: "toolu_3" },
     });
     pending.catch(() => undefined);
     await received.promise;

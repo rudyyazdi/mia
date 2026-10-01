@@ -1,15 +1,10 @@
 import type {
   GateDecision,
   GateRequest,
-  RuntimeEvent,
+  RuntimeConfig,
   SessionEvent,
   SessionHandle,
   SessionResult,
-  PermissionDecision,
-  PermissionRequest,
-  RuntimeConfig,
-  TurnHandle,
-  TurnResult,
 } from "@mia/agent-adapter";
 import type { FixtureState } from "@mia/controlled-mcp";
 
@@ -17,7 +12,6 @@ import type { FixtureState } from "@mia/controlled-mcp";
 export interface ProbeOptions {
   model: string;
   out: string;
-  examples: string;
   only?: string;
 }
 
@@ -31,32 +25,11 @@ export interface ProbeDeadlines {
   managerTurnEnded: () => AbortSignal;
   /** How long a worker agent's session may take to report its worker agents' ends and the turns they start. */
   sessionSettled: () => AbortSignal;
+  /** How long a stopped session's exit may take to be observed. */
+  stopped: () => AbortSignal;
 }
 
-export interface StepRecord {
-  name: string;
-  session_id: string;
-  first_turn: boolean;
-  prompt: string;
-  events: RuntimeEvent[];
-  permission_requests: {
-    /** The runtime's raw permission payload, snake_case as it arrived. */
-    request: unknown;
-    decision: PermissionDecision;
-    abandoned: boolean;
-  }[];
-  turn: TurnResult | null;
-  ledger_after: FixtureState | null;
-  hook_evidence: Record<string, unknown>[] | null;
-  /** Hook evidence lines that did not parse and are missing from `hook_evidence`. */
-  hook_evidence_malformed_lines: number | null;
-  /** Why the hook evidence file could not be read, when `hook_evidence` is empty for that reason. */
-  hook_evidence_read_error: string | null;
-  notes: string[];
-  checks: Record<string, boolean | string>;
-}
-
-/** One manager agent's session (D2): its events, every gate request and decision, and how it ended. */
+/** One manager agent's session: its events, every gate request and decision, and how it ended. */
 export interface SessionRecord {
   name: string;
   session_id: string;
@@ -81,26 +54,17 @@ export type GateDecider = (
   session: SessionRecord,
 ) => Promise<GateDecision> | GateDecision;
 
+/** The open session a step drives: user messages go in, and it is closed or stopped when the step is done. */
+export interface DrivenSession {
+  handle: SessionHandle;
+  /** Hands the manager agent `text` under a fresh message id. */
+  send: (text: string) => boolean;
+}
+
 export interface SessionSpec {
   name: string;
   config: RuntimeConfig;
   /** Run with the open session: send messages, wait on events, and close or stop it. */
-  drive: (handle: SessionHandle, session: SessionRecord) => Promise<void>;
+  drive: (session: DrivenSession, record: SessionRecord) => Promise<void>;
   decide: GateDecider;
-}
-
-export type Decider = (
-  request: PermissionRequest,
-  step: StepRecord,
-) => Promise<PermissionDecision> | PermissionDecision;
-
-export interface StepSpec {
-  name: string;
-  config: RuntimeConfig;
-  sessionId: string;
-  firstTurn: boolean;
-  prompt: string;
-  turnIndex: number;
-  decide: Decider;
-  during?: (handle: TurnHandle, step: StepRecord) => Promise<void>;
 }

@@ -199,7 +199,7 @@ export const planConversationProvenance = (input: {
   );
 
   items.push(
-    retained("tool_contracts", { bytes: json(toolContracts(profile.runtime)), version: "d1" }),
+    retained("tool_contracts", { bytes: json(toolContracts(profile.runtime)), version: null }),
   );
 
   // Requested model identities and effort; reported values live on executions.
@@ -210,7 +210,7 @@ export const planConversationProvenance = (input: {
         requested_effort: profile.runtime.effort,
         notes: profile.notes,
       }),
-      version: "d1",
+      version: null,
     }),
   );
 

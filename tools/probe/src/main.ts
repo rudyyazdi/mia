@@ -6,6 +6,7 @@ const deadlines: ProbeDeadlines = {
   ledgerSettled: () => AbortSignal.timeout(5_000),
   managerTurnEnded: () => AbortSignal.timeout(90_000),
   sessionSettled: () => AbortSignal.timeout(180_000),
+  stopped: () => AbortSignal.timeout(5_000),
 };
 
 const program = new Command()
@@ -15,11 +16,6 @@ const program = new Command()
     "--out <dir>",
     "evidence directory (a timestamped subdirectory is created)",
     ".mia-state/probe",
-  )
-  .option(
-    "--examples <dir>",
-    "where redacted protocol examples are frozen",
-    "docs/D1/protocol-examples",
   )
   .option("--only <names>", "comma-separated step names to run");
 program.parse();

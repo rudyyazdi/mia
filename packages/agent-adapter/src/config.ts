@@ -57,8 +57,6 @@ export const RuntimeConfigSchema = z
     effort: EffortSchema,
     /** Agent working directory (created if missing). Never a personal path in committed examples. */
     workingDirectory: z.string().min(1),
-    /** Built-in Claude Code tools to enable. Empty array means none. */
-    builtinTools: z.array(z.string()),
     mcpServers: z.record(z.string().regex(/^[A-Za-z0-9_-]+$/), McpServerConfigSchema),
     /**
      * Mia policy per fully qualified tool identity (mcp__<server>__<tool>).
@@ -71,11 +69,11 @@ export const RuntimeConfigSchema = z
       z.string().regex(/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_.-]+$/),
       ToolPolicySchema,
     ),
-    /** Mia-owned agent instructions appended to the runtime's system prompt. */
+    /** Mia-owned manager-agent instructions appended to the runtime's system prompt. */
     agentPromptFile: z.string().min(1),
     /**
-     * The worker agent the manager agent delegates every tool call to (D2). Null runs D1's single agent, which makes
-     * its tool calls itself. The worker agent may use every tool the policy lists and cannot start a worker agent.
+     * The worker agent the manager agent delegates every tool call to. It may use every tool the policy lists and
+     * cannot start or stop a worker agent.
      */
     workerAgent: z
       .object({
@@ -84,9 +82,7 @@ export const RuntimeConfigSchema = z
         /** Mia-owned worker-agent instructions. */
         promptFile: z.string().min(1),
       })
-      .strict()
-      .nullable()
-      .default(null),
+      .strict(),
     /**
      * Tools only one worker agent may use at a time, such as computer use: the engine refuses a second concurrent
      * call to one. Each must be a tool the policy lists.
@@ -155,12 +151,6 @@ export const validateRuntimeConfig = (config: RuntimeConfig): void => {
   if (Object.hasOwn(config.mcpServers, "mia_approval")) {
     throw new ConfigurationError(
       `mcpServers may not define "mia_approval"; that name is reserved for the approval bridge`,
-    );
-  }
-  for (const tool of config.builtinTools) {
-    // Built-in tools are not routed through the approval bridge by rule; D1 has proven gating only for MCP tools.
-    throw new ConfigurationError(
-      `builtinTools includes "${tool}", but D1 has no enforceable approval boundary for built-in tools; remove it or add a proven adapter boundary`,
     );
   }
   for (const [key, value] of Object.entries(config.env)) {

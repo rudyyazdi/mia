@@ -3,8 +3,10 @@ import type { ObjectIntegrity } from "./schema.ts";
 import {
   diagnosticsViews,
   taskViews,
+  turnViews,
   type ConversationSnapshot,
   type TaskView,
+  type TurnView,
 } from "./queries.ts";
 
 const esc = (value: unknown): string =>
@@ -35,6 +37,15 @@ const table = (headers: string[], rows: unknown[][]): string => {
 /** Parse a stored JSON column for display; null columns render as null. */
 const stored = (json: string | null): unknown => (json ? parseJson(json) : null);
 
+const turnSection = (turn: TurnView): string => {
+  const cause =
+    turn.cause === "task_end" ? `reports task ${turn.caused_by_task_id ?? "?"}` : "user input";
+  return `<section class=turn><h3>Turn ${esc(turn.id)} <span class="badge ${esc(turn.status)}">${esc(turn.status)}</span></h3>
+<p class=muted>${esc(turn.started_at)} · ${esc(cause)}</p>
+${turn.messages.map((text) => `<div class=user><strong>User</strong>${pre(text).markup}</div>`).join("")}
+<div class=assistant><strong>Manager agent</strong>${pre(turn.reply || "(no text)").markup}</div></section>`;
+};
+
 const taskSection = (task: TaskView): string => {
   const partialNote = task.partial ? " (partial output; task did not complete)" : "";
   const interruption = task.interruption
@@ -48,8 +59,7 @@ const taskSection = (task: TaskView): string => {
     : "";
   return `<section class=task><h3>Task ${esc(task.id)} <span class="badge ${esc(task.status)}">${esc(task.status)}</span></h3>
 <p class=muted>${esc(task.created_at)} → ${esc(task.finished_at ?? "not finished")}</p>
-<div class=user><strong>User</strong>${pre(task.text).markup}</div>
-<div class=assistant><strong>Agent${partialNote}</strong>${pre(task.assistant_text || "(no text)").markup}</div>
+<div class=user><strong>Delegated${partialNote}</strong>${pre(task.text).markup}</div>
 <details><summary>Tool calls and approvals (${task.tool_calls.length})</summary>${table(
     [
       "tool",
@@ -75,7 +85,6 @@ const taskSection = (task: TaskView): string => {
         call.approvals.map((approval) => ({
           id: approval.id,
           status: approval.status,
-          epoch: approval.execution_epoch,
           reason: approval.reason,
           client: approval.decision_client_id,
           consumed_at: approval.consumed_at,
@@ -144,7 +153,7 @@ ${table(
   [
     "execution",
     "task",
-    "epoch",
+    "role",
     "requested model",
     "reported model",
     "requested effort",
@@ -156,7 +165,7 @@ ${table(
   snapshot.tables.executions.map((execution) => [
     execution.id,
     execution.task_id,
-    execution.execution_epoch,
+    execution.agent_role,
     execution.requested_model,
     execution.reported_model ?? "unreported",
     execution.requested_effort,
@@ -167,7 +176,9 @@ ${table(
   ]),
 )}`);
 
-  sections.push(`<h2>Transcript</h2>${tasks.map(taskSection).join("")}`);
+  sections.push(
+    `<h2>Transcript</h2>${turnViews(snapshot).map(turnSection).join("")}<h2>Tasks</h2>${tasks.map(taskSection).join("")}`,
+  );
 
   const conversationEvents = snapshot.tables.events.filter((event) => !event.task_id);
   sections.push(

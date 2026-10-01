@@ -1,4 +1,4 @@
-import type { LaunchPlan } from "./launch.ts";
+import type { SessionPlan } from "./launch.ts";
 
 /**
  * The runtime-independent contract between an agent runtime and the engine. A runtime's own message
@@ -32,7 +32,9 @@ export interface TurnSummary {
 }
 
 export type RuntimeEvent =
-  | { type: "runtime_started"; pid: number; launch: LaunchPlan["description"]; at: string }
+  | { type: "runtime_started"; pid: number; launch: SessionPlan["description"]; at: string }
+  /** The runtime replayed a user message as a turn took it: the UUID Mia sent the message under. */
+  | { type: "input_taken"; runtimeMessageId: string; at: string }
   | { type: "runtime_init"; init: RuntimeInit; at: string }
   | { type: "text_delta"; text: string; parentCallId: string | null; at: string }
   | {

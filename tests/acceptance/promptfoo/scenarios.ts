@@ -302,11 +302,11 @@ const taskScenario = (spec: {
 
 const rejectEverything: Decider = () => "reject";
 const approveEverything: Decider = () => "approve";
-const approveSlowOnly: Decider = ({ tool }) => (tool === "mcp__d1__slow" ? "approve" : "reject");
+const approveSlowOnly: Decider = ({ tool }) => (tool === "mcp__fixture__slow" ? "approve" : "reject");
 
-const CHANGE_ONCE = "Call d1.change with delta 1 exactly once. Do not retry a denial.";
+const CHANGE_ONCE = "Call fixture.change with delta 1 exactly once. Do not retry a denial.";
 const slowThenChange = (mode: SlowMode): string =>
-  `Call d1.slow with mode ${mode} exactly once, then call d1.change with delta 1 exactly once.`;
+  `Call fixture.slow with mode ${mode} exactly once, then call fixture.change with delta 1 exactly once.`;
 
 /** Interrupt the moment the fixture reports the slow action entered: the shared part of both interruption scenarios. */
 const interruptAtEntered = async ({
@@ -333,7 +333,7 @@ export const SCENARIOS: Scenario[] = [
   taskScenario({
     name: "allowed",
     profile: "fixture-test",
-    tasks: [{ text: "Call d1.read once. Report the counter.", decide: rejectEverything }],
+    tasks: [{ text: "Call fixture.read once. Report the counter.", decide: rejectEverything }],
   }),
   taskScenario({
     name: "approve-reject",
@@ -348,7 +348,7 @@ export const SCENARIOS: Scenario[] = [
     profile: "fixture-test",
     tasks: [
       {
-        text: "Call d1.change with delta 1 twice, sequentially (two separate calls). Do not retry a denial.",
+        text: "Call fixture.change with delta 1 twice, sequentially (two separate calls). Do not retry a denial.",
         decide: ({ index }) => (index === 0 ? "approve" : "reject"),
       },
     ],
@@ -357,7 +357,7 @@ export const SCENARIOS: Scenario[] = [
     name: "denied",
     profile: "fixture-test",
     tasks: [
-      { text: "Call d1.forbidden once. If it is not available, say so.", decide: rejectEverything },
+      { text: "Call fixture.forbidden once. If it is not available, say so.", decide: rejectEverything },
     ],
   }),
   {
@@ -455,7 +455,7 @@ export const SCENARIOS: Scenario[] = [
     profile: "fixture-test-interrupt",
     tasks: [
       {
-        text: "Call d1.change with delta 1 exactly once. Report the new counter.",
+        text: "Call fixture.change with delta 1 exactly once. Report the new counter.",
         decide: rejectEverything,
       },
     ],
@@ -466,7 +466,7 @@ export const SCENARIOS: Scenario[] = [
     profile: "fixture-test",
     tasks: [
       {
-        text: "Call d1.artifact with name result.txt and text D1. Report the result.",
+        text: "Call fixture.artifact with name result.txt and text D1. Report the result.",
         decide: approveEverything,
       },
     ],

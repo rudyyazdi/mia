@@ -26,7 +26,7 @@ const judge = (scenario: ScenarioName, evidence: Record<string, unknown>) =>
 
 const reconnectDecision = {
   approval_id: "approval",
-  tool: "mcp__d1__change",
+  tool: "mcp__fixture__change",
   decision: "reject",
   ledger_commits_at_request: 0,
 };
@@ -98,14 +98,14 @@ describe("scenario assertion", () => {
         decisions: [
           {
             approval_id: "first",
-            tool: "mcp__d1__change",
+            tool: "mcp__fixture__change",
             decision: "approve",
             ack: { disposition: "accepted", after_reconnect: false },
             ledger_commits_at_request: 0,
           },
           {
             approval_id: "second",
-            tool: "mcp__d1__change",
+            tool: "mcp__fixture__change",
             decision: "reject",
             ledger_commits_at_request: 1,
             ...second,

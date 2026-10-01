@@ -36,14 +36,14 @@ describe("mcpBodiesFrom", () => {
     ]);
   });
 
-  it("says at turn end only that a missing line was not written yet, as the server may still be handling it", () => {
+  it("says at session end only that a missing line was not written yet, as the server may still be handling it", () => {
     const read = logOf({ tool_use_id: "toolu_a", direction: "request", body: 1 });
-    expect(mcpBodiesFrom(read, "toolu_a", "turn_end")).toEqual([
+    expect(mcpBodiesFrom(read, "toolu_a", "session_end")).toEqual([
       { direction: "request", status: "recorded", body: 1 },
       {
         direction: "response",
         status: "unrecorded",
-        reason: "the body log had no response for this call when its turn ended",
+        reason: "the body log had no response for this call when its session ended",
       },
     ]);
   });

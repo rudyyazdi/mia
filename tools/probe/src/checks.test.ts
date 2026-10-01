@@ -1,126 +1,117 @@
-import type { PermissionDecision } from "@mia/agent-adapter";
 import { describe, expect, it } from "vitest";
-import type { FixtureState } from "@mia/controlled-mcp";
-import { effortsOf, followupChecks, streamApproveChecks } from "./checks.ts";
-import type { StepRecord } from "./record.ts";
+import type { SessionEvent } from "@mia/agent-adapter";
+import type { SessionRecord } from "./record.ts";
+import { workerBackgroundChecks, workerGateChecks } from "./checks.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
 
-const allow: PermissionDecision = { behavior: "allow" };
-
-const ledger = (
-  entries: Pick<FixtureState["ledger"][number], "kind" | "tool">[],
-): FixtureState => ({
-  counter: 0,
-  pending: [],
-  ledger: entries.map((entry, index) => ({
-    ...entry,
-    seq: index + 1,
-    at,
-    call_id: `call-${index}`,
-  })),
-});
-
-const step = (overrides: Partial<StepRecord>): StepRecord => ({
-  name: "step",
-  session_id: "session",
-  first_turn: true,
-  prompt: "",
+const session = (fields: Partial<SessionRecord>): SessionRecord => ({
+  name: "s",
+  session_id: "s",
   events: [],
-  permission_requests: [],
-  turn: null,
+  gate_requests: [],
+  bridge_requests: 0,
+  result: null,
   ledger_after: null,
-  hook_evidence: null,
-  hook_evidence_malformed_lines: null,
-  hook_evidence_read_error: null,
   notes: [],
   checks: {},
-  ...overrides,
+  ...fields,
 });
 
-describe("probe evidence readings", () => {
-  it("reads effort from the hook's object or string, else the environment it saw", () => {
-    expect(
-      effortsOf([
-        { effort: { level: "high" } },
-        { effort: "low" },
-        { env_claude_effort: "medium" },
-        { effort: 42 },
-      ]),
-    ).toEqual(["high", "low", "medium", undefined]);
-  });
+const started: SessionEvent = {
+  type: "worker_started",
+  runtimeTaskId: "a1",
+  delegationCallId: "toolu_delegation",
+  description: "",
+  prompt: "",
+  background: true,
+  at,
+};
 
-  it("orders streamed text before the result and counts exactly one commit", () => {
-    const record = step({
-      events: [
-        { type: "text_delta", text: "hi", parentCallId: null, at },
-        {
-          type: "tool_proposed",
-          runtimeCallId: "toolu_1",
-          parentCallId: null,
-          toolIdentity: "mcp__d1__read",
-          arguments: {},
-          complete: true,
-          at,
-        },
-      ],
-      permission_requests: [
-        {
-          request: { tool_name: "mcp__d1__read", tool_use_id: "toolu_1" },
-          decision: allow,
-          abandoned: false,
-        },
-      ],
-      ledger_after: ledger([{ kind: "committed", tool: "change" }]),
-    });
-    expect(streamApproveChecks(record)).toMatchObject({
-      read_routed_through_bridge: true,
-      change_routed_through_bridge: false,
-      tool_use_id_matches_streamed_tool_use: true,
-      exactly_one_commit: true,
-      effort_evidence: "no hook evidence captured",
-      effort_flag_beats_settings_layer: false,
-    });
-  });
+const proposal = (parentCallId: string | null): SessionEvent => ({
+  type: "tool_proposed",
+  runtimeCallId: "toolu_change",
+  toolIdentity: "mcp__fixture__change",
+  parentCallId,
+  arguments: {},
+  complete: true,
+  at,
+});
 
-  it("says why effort is missing when the hook evidence could not be read", () => {
-    const record = step({
-      hook_evidence: [],
-      hook_evidence_read_error: "EACCES: permission denied",
-    });
-    expect(streamApproveChecks(record).effort_evidence).toBe(
-      "hook evidence unreadable: EACCES: permission denied",
-    );
-  });
+const changeRequest = (agentId: string | null) => ({
+  request: {
+    toolName: "mcp__fixture__change",
+    input: {},
+    toolUseId: "toolu_change",
+    agentId,
+    agentType: agentId === null ? null : "mia-worker",
+    raw: {},
+    receivedAt: at,
+  },
+  decision: { behavior: "deny" as const, message: "rejected" },
+  abandoned: false,
+  event_index: 2,
+});
 
-  it("wants two distinct change requests and a forbidden tool that neither reached the bridge nor ran", () => {
-    const change = (id: string) => ({
-      request: { tool_name: "mcp__d1__change", tool_use_id: id },
-      decision: allow,
-      abandoned: false,
-    });
-    const passing = followupChecks(
-      step({ permission_requests: [change("a"), change("b")], ledger_after: ledger([]) }),
-    );
-    expect(passing).toMatchObject({
-      two_distinct_change_requests: true,
-      forbidden_never_reached_bridge: true,
-      forbidden_never_executed: true,
-    });
-    const failing = followupChecks(
-      step({
-        permission_requests: [
-          change("a"),
-          change("a"),
-          { ...change("c"), request: { tool_name: "mcp__d1__forbidden" } },
-        ],
-        ledger_after: ledger([{ kind: "committed", tool: "forbidden" }]),
+describe("workerGateChecks", () => {
+  it("attributes a call only when the gate's worker agent and the stream's delegation call agree", () => {
+    const agreeing = workerGateChecks(
+      session({
+        events: [started, proposal("toolu_delegation")],
+        gate_requests: [changeRequest("a1")],
       }),
     );
-    expect(failing).toMatchObject({
-      two_distinct_change_requests: false,
-      forbidden_never_reached_bridge: false,
-      forbidden_never_executed: false,
+    expect(agreeing).toMatchObject({
+      every_fixture_call_attributed_to_a_worker: true,
+      stream_attribution_matches_gate: true,
+      manager_made_no_fixture_calls: true,
+    });
+    const disagreeing = workerGateChecks(
+      session({ events: [started, proposal("toolu_other")], gate_requests: [changeRequest("a1")] }),
+    );
+    expect(disagreeing.stream_attribution_matches_gate).toBe(false);
+  });
+
+  it("counts a call the gate saw with no worker agent as the manager agent's own", () => {
+    const checks = workerGateChecks(
+      session({ events: [started, proposal(null)], gate_requests: [changeRequest(null)] }),
+    );
+    expect(checks).toMatchObject({
+      manager_made_no_fixture_calls: false,
+      every_fixture_call_attributed_to_a_worker: false,
+    });
+  });
+});
+
+describe("workerBackgroundChecks", () => {
+  const result: SessionEvent = {
+    type: "turn_result",
+    summary: { isError: false, outcome: "success", evidence: {} },
+    at,
+  };
+  const ended: SessionEvent = {
+    type: "worker_ended",
+    runtimeTaskId: "a1",
+    delegationCallId: "toolu_delegation",
+    status: "completed",
+    summary: null,
+    at,
+  };
+
+  it("passes only for turns that ended before the held call was released", () => {
+    const events = [started, result, result, ended, result];
+    expect(
+      workerBackgroundChecks(session({ events }), { eventsAtSecondAnswer: 3, eventsAtRelease: 3 }),
+    ).toMatchObject({
+      manager_turn_ended_while_worker_held: true,
+      second_message_answered_while_worker_held: true,
+      worker_end_started_a_manager_turn: true,
+    });
+    expect(
+      workerBackgroundChecks(session({ events }), { eventsAtSecondAnswer: 0, eventsAtRelease: 1 }),
+    ).toMatchObject({
+      manager_turn_ended_while_worker_held: false,
+      second_message_answered_while_worker_held: false,
     });
   });
 });

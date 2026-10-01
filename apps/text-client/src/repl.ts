@@ -114,10 +114,7 @@ interface Session {
 const renderEvents = (session: Session): void => {
   const { client, terminal } = session;
   const out = (line: string) => terminal.out(line);
-  client.on("text_delta", (event: ServerEventOf<"text_delta">) =>
-    terminal.stream(event.payload.text),
-  );
-  // D2: the manager agent's reply streams under its turn, which may report a task's end.
+  // The manager agent's reply streams under its turn, which may report a task's end.
   client.on("reply_delta", (event: ServerEventOf<"reply_delta">) =>
     terminal.stream(event.payload.text),
   );
@@ -138,7 +135,7 @@ const renderEvents = (session: Session): void => {
         `│ tool:      ${event.payload.tool_identity}`,
         `│ action:    ${event.payload.intended_action}`,
         `│ arguments: ${JSON.stringify(event.payload.redacted_arguments)}`,
-        `│ binding:   call ${event.payload.runtime_call_id} rev ${event.payload.binding_revision} epoch ${event.payload.execution_epoch} digest ${event.payload.argument_digest.slice(0, 12)}…`,
+        `│ binding:   call ${event.payload.runtime_call_id} rev ${event.payload.binding_revision} digest ${event.payload.argument_digest.slice(0, 12)}…`,
         `└─ type  /approve ${event.payload.approval_id}   or   /reject ${event.payload.approval_id}`,
       ].join("\n"),
     );

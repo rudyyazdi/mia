@@ -69,6 +69,8 @@ export const UserMessageSchema = base.extend({
     .passthrough(),
   parent_tool_use_id: z.string().nullable().optional(),
   tool_use_result: z.unknown().optional(),
+  /** Set on a user message the runtime replays from stdin (`--replay-user-messages`). */
+  isReplay: z.boolean().optional(),
 });
 
 export const StreamEventSchema = base.extend({

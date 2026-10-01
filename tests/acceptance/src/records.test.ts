@@ -10,14 +10,21 @@ import {
   verifyExportSync,
 } from "@mia/records";
 import type { MiaClient } from "@mia/text-client";
-import type { ScriptedRuntime } from "./scripted-runtime.ts";
-import { ackResult, must, mustString, useScriptedSession, type TestServer } from "./harness.ts";
+import {
+  ackResult,
+  must,
+  turnWithWorker,
+  useScripted,
+  type Scripted,
+  type TestServer,
+} from "./harness.ts";
 
-let runtime: ScriptedRuntime;
+let scripted: Scripted;
 let ts: TestServer;
 let client: MiaClient;
-useScriptedSession((session) => {
-  ({ runtime, server: ts, client } = session);
+useScripted((started) => {
+  scripted = started;
+  ({ server: ts, client } = started);
 });
 
 const ExportedArtifactRow = z.object({ logical_name: z.string(), object_digest: z.string() });
@@ -28,71 +35,85 @@ const jsonLines = <T>(path: string, schema: z.ZodType<T>): T[] =>
     .filter(Boolean)
     .map((line) => schema.parse(JSON.parse(line)));
 
-/** Build a conversation containing every evidence type the D1 verification list asks for. */
+/** Build a conversation containing every evidence type the record must hold. */
 const richConversation = async (): Promise<{ conversationId: string; artifactFile: string }> => {
   const outDir = must(ts.profile.runtime.outputDirectories[0], "output directory");
   mkdirSync(outDir, { recursive: true });
   const artifactFile = join(outDir, "result.txt");
   writeFileSync(artifactFile, "D1");
-  // task 1: stream + approve + reject + artifact
-  let next = runtime.nextTurn();
-  let ack = await client.submitText("do things");
-  const taskId = mustString(ackResult(ack).task_id, "ack task_id");
-  const turn = await next;
-  turn.init("scripted-model");
-  turn.text("Working on it. secret sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 leaked?");
-  const p1 = turn.request(
-    "mcp__d1__change",
-    { delta: 1, token: "super-secret-value-123456" },
-    "toolu_1",
+  // task 1: a reply, an approved, a rejected and an output-declaring call, and a call no policy lists
+  const session = await turnWithWorker(scripted, { text: "do things", runtimeTaskId: "a1" });
+  await session.reply(
+    "Working on it. secret sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 leaked?",
   );
-  const r1 = await client.waitFor(
-    "approval_requested",
-    (event) => event.payload.runtime_call_id === "toolu_1",
+  const decide = async (
+    call: { toolName: string; input: unknown; toolUseId: string; agentId?: string },
+    decision: "approve" | "reject",
+  ) => {
+    const { toolUseId } = call;
+    const answer = session.ask({ ...call, agentId: call.agentId ?? "a1" });
+    const requested = await client.waitFor(
+      "approval_requested",
+      (event) => event.payload.runtime_call_id === toolUseId,
+    );
+    await client.decide({
+      taskId: requested.payload.task_id,
+      approvalId: requested.payload.approval_id,
+      decision,
+    });
+    return answer;
+  };
+  await decide(
+    {
+      toolName: "mcp__fixture__change",
+      input: { delta: 1, token: "super-secret-value-123456" },
+      toolUseId: "toolu_1",
+    },
+    "approve",
   );
-  await client.decide({ taskId: taskId, approvalId: r1.payload.approval_id, decision: "approve" });
-  await p1;
-  await turn.toolResult("toolu_1", JSON.stringify({ counter: 1 }));
-  const p2 = turn.request("mcp__d1__change", { delta: 1 }, "toolu_2");
-  const r2 = await client.waitFor(
-    "approval_requested",
-    (event) => event.payload.runtime_call_id === "toolu_2",
+  await session.toolResult({
+    runtimeCallId: "toolu_1",
+    workerTaskId: "a1",
+    content: JSON.stringify({ counter: 1 }),
+  });
+  await decide(
+    { toolName: "mcp__fixture__change", input: { delta: 1 }, toolUseId: "toolu_2" },
+    "reject",
   );
-  await client.decide({ taskId: taskId, approvalId: r2.payload.approval_id, decision: "reject" });
-  await p2;
-  await turn.toolResult("toolu_2", "denied", true);
-  const p3 = turn.request("mcp__d1__artifact", { name: "result.txt", text: "D1" }, "toolu_3");
-  const r3 = await client.waitFor(
-    "approval_requested",
-    (event) => event.payload.runtime_call_id === "toolu_3",
+  await decide(
+    {
+      toolName: "mcp__fixture__artifact",
+      input: { name: "result.txt", text: "D1" },
+      toolUseId: "toolu_3",
+    },
+    "approve",
   );
-  await client.decide({ taskId: taskId, approvalId: r3.payload.approval_id, decision: "approve" });
-  await p3;
-  await turn.toolResult(
-    "toolu_3",
-    JSON.stringify({
+  await session.toolResult({
+    runtimeCallId: "toolu_3",
+    workerTaskId: "a1",
+    content: JSON.stringify({
       artifact: { path: artifactFile, name: "result.txt", mime_type: "text/plain" },
     }),
-  );
-  await turn.request("mcp__d1__mystery", {}, "toolu_4"); // produces an error event
-  turn.end();
-  await client.waitFor("task_finished", (event) => event.payload.task_id === taskId);
+  });
+  await session.ask({ toolName: "mcp__fixture__mystery", toolUseId: "toolu_4", agentId: "a1" });
+  await session.endWorker("a1");
+  await session.endTurn();
+  await client.waitFor("task_finished");
   await client.sendDiagnostics();
   // task 2: interruption with an in-flight action
-  next = runtime.nextTurn();
-  ack = await client.submitText("slow");
-  const task2 = mustString(ackResult(ack).task_id, "ack task_id");
-  const turn2 = await next;
-  turn2.init();
-  const slow = turn2.request("mcp__d1__slow", { mode: "uncancellable" }, "toolu_5");
-  const r5 = await client.waitFor(
-    "approval_requested",
-    (event) => event.payload.runtime_call_id === "toolu_5",
+  await session.beginTurn();
+  await session.delegate("a2");
+  await decide(
+    {
+      toolName: "mcp__fixture__slow",
+      input: { mode: "uncancellable" },
+      toolUseId: "toolu_5",
+      agentId: "a2",
+    },
+    "approve",
   );
-  await client.decide({ taskId: task2, approvalId: r5.payload.approval_id, decision: "approve" });
-  await slow;
-  await client.interrupt(task2);
-  await client.waitFor("task_finished", (event) => event.payload.task_id === task2);
+  await client.interruptAll();
+  await client.waitFor("interruption_outcome");
   return { conversationId: must(client.conversationId, "conversation id"), artifactFile };
 };
 
@@ -103,7 +124,7 @@ describe("records, report and export", () => {
     const catalog = ts.catalog();
     const snapshot = snapshotConversation(catalog, conversationId);
     expect(snapshot.tables.tasks).toHaveLength(2);
-    expect(snapshot.tables.events.some((event) => event.type === "text_delta")).toBe(true);
+    expect(snapshot.tables.events.some((event) => event.type === "reply_delta")).toBe(true);
     expect(snapshot.tables.approvals.map((approval) => approval.status).sort()).toEqual([
       "approved",
       "approved",
@@ -113,24 +134,11 @@ describe("records, report and export", () => {
     expect(snapshot.tables.events.some((event) => event.type === "interruption_outcome")).toBe(
       true,
     );
-    expect(snapshot.tables.events.some((event) => event.type === "error")).toBe(true);
+    expect(snapshot.tables.tool_calls).toContainEqual(
+      expect.objectContaining({ tool_identity: "mcp__fixture__mystery", status: "denied" }),
+    );
     expect(snapshot.tables.diagnostics.length).toBeGreaterThan(0);
-    // The runtime's own result message is the recorded evidence; usage keeps its stored snake_case keys.
-    expect(
-      snapshot.tables.events
-        .filter((event) => event.type === "runtime_result")
-        .map((event): unknown => JSON.parse(event.payload)),
-    ).toContainEqual({ scripted: "result", session: expect.any(String) });
-    expect(
-      snapshot.tables.executions
-        .flatMap((execution) => (execution.usage ? [execution.usage] : []))
-        .map((usage): unknown => JSON.parse(usage)),
-    ).toContainEqual({
-      usage: { input_tokens: 1, output_tokens: 1 },
-      total_cost_usd: 0,
-      duration_ms: 5,
-      num_turns: 1,
-    });
+    expect(snapshot.tables.events.some((event) => event.type === "runtime_result")).toBe(true);
     expect(
       snapshot.tables.artifacts.some(
         (artifact) => artifact.kind === "tool_output" && artifact.capture_status === "retained",
@@ -138,7 +146,9 @@ describe("records, report and export", () => {
     ).toBe(true);
     expect(
       snapshot.tables.provenance_entries.some(
-        (entry) => entry.role === "agent_prompt" && entry.availability === "retained",
+        (entry) =>
+          (entry.role === "agent_prompt" || entry.role === "worker_prompt") &&
+          entry.availability === "retained",
       ),
     ).toBe(true);
     expect(
@@ -181,20 +191,17 @@ describe("records, report and export", () => {
   });
 
   it("exports from one consistent snapshot: events written during export do not leak", async () => {
-    const next = runtime.nextTurn();
-    const ack = await client.submitText("stream");
-    const turn = await next;
-    turn.init();
+    const session = await turnWithWorker(scripted, { text: "stream", runtimeTaskId: "a1" });
     const delivered = (text: string) =>
-      client.waitFor("text_delta", (event) => event.payload.text === text);
-    turn.text("a");
+      client.waitFor("reply_delta", (event) => event.payload.text === text);
+    await session.reply("a");
     await delivered("a");
     const catalog = ts.catalog();
     const conversationId = must(client.conversationId, "conversation id");
     const before = snapshotConversation(catalog, conversationId).cutoff_sequence;
     // Write more events while exporting: the export must stop at its own cutoff.
-    turn.text("b");
-    turn.text("c");
+    await session.reply("b");
+    await session.reply("c");
     await delivered("c");
     const exportDir = join(ts.dir, "export-2");
     const result = exportConversationSync(catalog, conversationId, exportDir);
@@ -204,35 +211,27 @@ describe("records, report and export", () => {
     expect(Math.max(...events.map((event) => event.sequence))).toBe(
       result.manifest.cutoff_sequence,
     );
-    expect(result.manifest.ongoing_tasks).toEqual([ackResult(ack).task_id]);
+    const started = await client.waitFor("task_started");
+    expect(result.manifest.ongoing_tasks).toEqual([started.payload.task_id]);
     const report = readFileSync(join(exportDir, "report.html"), "utf8");
     expect(report).toContain("ongoing tasks at cutoff");
-    turn.end();
+    await session.endWorker("a1");
     await client.waitFor("task_finished");
     expect(verifyExportSync(exportDir).ok).toBe(true);
   });
 
   it("exports the prompt object two conversations share without the other conversation's records", async () => {
     const first = must(client.conversationId, "conversation id");
-    const { turn } = await (async () => {
-      const next = runtime.nextTurn();
-      await client.submitText("first conversation text");
-      return { turn: await next };
-    })();
-    turn.init();
-    turn.text("first answer");
-    turn.end();
-    await client.waitFor("task_finished");
+    const session = await turnWithWorker(scripted, { text: "first conversation text" });
+    await session.reply("first answer");
+    await session.endTurn();
     // Second conversation from the same client shares the prompt snapshot (same bytes -> same object).
     const second = await client.startConversation();
     expect(second).not.toBe(first);
-    const next2 = runtime.nextTurn();
-    await client.submitText("UNRELATED-SECOND-TEXT");
-    const turn2 = await next2;
-    turn2.init();
-    turn2.text("UNRELATED-SECOND-ANSWER");
-    turn2.end();
-    await client.waitFor("task_finished", (event) => event.payload.conversation_id === second);
+    const session2 = await turnWithWorker(scripted, { text: "UNRELATED-SECOND-TEXT" });
+    await session2.reply("UNRELATED-SECOND-ANSWER");
+    await session2.endTurn();
+    await client.waitFor("turn_finished", (event) => event.payload.conversation_id === second);
     const catalog = ts.catalog();
     const promptDigest = must(
       catalog.get<{ object_digest: string }>(

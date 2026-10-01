@@ -141,7 +141,7 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
       if (slowEntered() !== 1)
         problems.push(`slow entered ${slowEntered()} times (duplicate dispatch?)`);
       if (commits.length !== 0) problems.push(`commits after interruption: ${commits.length}`);
-      if (has("approval_requested", (payload) => payload.tool_identity === "mcp__d1__change"))
+      if (has("approval_requested", (payload) => payload.tool_identity === "mcp__fixture__change"))
         problems.push("a consequential change was proposed after interruption");
       if (!has("interruption_outcome")) problems.push("no interruption outcome recorded");
       if (
@@ -161,7 +161,7 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
         evidence.events.find((event) => event.type === "interruption_outcome")?.payload,
       );
       const slow = outcome.success
-        ? outcome.data.actions?.find((action) => action.tool_identity === "mcp__d1__slow")
+        ? outcome.data.actions?.find((action) => action.tool_identity === "mcp__fixture__slow")
         : undefined;
       if (!slow || slow.status !== "unknown")
         problems.push(
@@ -183,7 +183,7 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
         !has(
           "tool_call",
           (payload) =>
-            payload.tool_identity === "mcp__d1__artifact" && payload.status === "completed",
+            payload.tool_identity === "mcp__fixture__artifact" && payload.status === "completed",
         )
       )
         problems.push("artifact call did not complete");

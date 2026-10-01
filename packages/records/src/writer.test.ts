@@ -67,7 +67,6 @@ const seedToolCall = (): void => {
     requestedModel: "m",
     requestedEffort: "medium",
     provenanceSetId: prov,
-    executionEpoch: 1,
   });
   writer.createToolCall({
     id: "call-1",
@@ -77,7 +76,7 @@ const seedToolCall = (): void => {
     executionId: "exec-1",
     runtimeCallId: "toolu_1",
     bindingRevision: 1,
-    toolIdentity: "mcp__d1__change",
+    toolIdentity: "mcp__fixture__change",
     argumentDigest: "d",
     redactedArguments: { delta: 1 },
     policy: "ask",
@@ -235,12 +234,11 @@ describe("record writer", () => {
     expect(writer.objects.verifySync(one.digest)).toBe("verified");
   });
 
-  it("rejects duplicate approvals for the same binding and epoch", () => {
+  it("rejects a second approval for the same call", () => {
     seedToolCall();
     const approval = {
       requestedAt: AT,
       toolCallId: "call-1",
-      executionEpoch: 1,
       requestingEventId: null,
     };
     writer.createApproval({ id: "appr-1", ...approval });
@@ -371,7 +369,7 @@ describe("exclusive-tool leases", () => {
   const lease = (id: string) => ({
     id,
     conversationId: "conv-1",
-    toolIdentity: "mcp__d1__change",
+    toolIdentity: "mcp__fixture__change",
     taskId: "task-1",
     toolCallId: "call-1",
     acquiredAt: AT,
@@ -400,7 +398,6 @@ describe("executions and turns", () => {
       requestedModel: "m",
       requestedEffort: "medium" as const,
       provenanceSetId: null,
-      executionEpoch: 0,
     });
     writer.createExecution(execution("exec-manager", "manager", null));
     expect(() => writer.createExecution(execution("exec-bad", "manager", "task-1"))).toThrow();

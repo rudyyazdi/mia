@@ -19,19 +19,22 @@ import {
   must,
   mustString,
   startTestServer,
-  useScriptedSession,
+  turnWithWorker,
+  useScripted,
+  type Scripted,
   type TestServer,
 } from "./harness.ts";
-import { ScriptedRuntime } from "./scripted-runtime.ts";
+import { ScriptedSessions } from "./scripted-session.ts";
 
 /** When the rows these tests write say they were recorded. */
 const AT = "2026-01-01T00:00:00.000Z";
 
-let runtime: ScriptedRuntime;
+let scripted: Scripted;
 let ts: TestServer;
 let client: MiaClient;
-useScriptedSession((session) => {
-  ({ runtime, server: ts, client } = session);
+useScripted((started) => {
+  scripted = started;
+  ({ server: ts, client } = started);
 });
 
 const ViewSchema = z.object({ summary: z.string(), body: z.string() });
@@ -249,7 +252,7 @@ const get = (url: string, headers: Record<string, string>) => {
 
 /**
  * What a page is sent on connecting to a finished conversation of a server started with `debugMode`: one task whose
- * allowed read call runs. With `bodyLog`, the d1 server names that log, as the controlled MCP fixture does, and
+ * allowed read call runs. With `bodyLog`, the fixture server names that log, as the controlled MCP fixture does, and
  * `beforeResult` writes it as the fixture would, before the call's result arrives. `beforeWatch` runs on the
  * server's state directory before the watch starts.
  */
@@ -259,13 +262,13 @@ const watchedFinished = async (options: {
   beforeWatch?: (catalog: Catalog, conversationId: string) => void;
 }): Promise<WatchMessage[]> => {
   const { debugMode, body } = options;
-  const finishedRuntime = new ScriptedRuntime();
+  const sessions = new ScriptedSessions();
   const finishedServer = await startTestServer(
-    finishedRuntime,
+    sessions,
     body
       ? {
           mcpServers: {
-            d1: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: body.bodyLog },
+            fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: body.bodyLog },
           },
         }
       : {},
@@ -275,14 +278,21 @@ const watchedFinished = async (options: {
   onTestFinished(() => finishedServer.close());
   const finishedClient = await finishedServer.connect("client-A");
   await finishedClient.startConversation();
-  const next = finishedRuntime.nextTurn();
-  await finishedClient.submitText("read it");
-  const turn = await next;
-  turn.init();
-  expect((await turn.request("mcp__d1__read", {}, "toolu_read")).behavior).toBe("allow");
+  const session = await turnWithWorker(
+    { sessions, server: finishedServer, client: finishedClient },
+    { text: "read it", runtimeTaskId: "a1" },
+  );
+  expect(
+    (await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a1" }))
+      .behavior,
+  ).toBe("allow");
   body?.beforeResult();
-  await turn.toolResult("toolu_read", JSON.stringify({ unread: 3 }));
-  turn.end();
+  await session.toolResult({
+    runtimeCallId: "toolu_read",
+    workerTaskId: "a1",
+    content: JSON.stringify({ unread: 3 }),
+  });
+  await session.endWorker("a1");
   await finishedClient.waitFor("task_finished");
 
   const finishedId = must(finishedClient.conversationId, "conversation id");
@@ -329,20 +339,26 @@ const toolCallNode = (messages: WatchMessage[]): NodeMessage =>
 describe("mia debug watch", () => {
   // The token is also redacted before it is stored, so the view's own redaction is covered by watch-render.test.ts.
   it("shows a finished conversation's whole tree, each node under its parent, without the token", async () => {
-    const next = runtime.nextTurn();
-    const taskId = mustString(ackResult(await client.submitText("change it")).task_id, "task id");
-    const turn = await next;
-    turn.init();
-    const decided = turn.request(
-      "mcp__d1__change",
-      { delta: 1, token: "super-secret-value-123456" },
-      "toolu_1",
-    );
+    const session = await turnWithWorker(scripted, { text: "change it", runtimeTaskId: "a1" });
+    const decided = session.ask({
+      toolName: "mcp__fixture__change",
+      input: { delta: 1, token: "super-secret-value-123456" },
+      toolUseId: "toolu_1",
+      agentId: "a1",
+    });
     const requested = await client.waitFor("approval_requested");
-    await client.decide({ taskId, approvalId: requested.payload.approval_id, decision: "approve" });
+    await client.decide({
+      taskId: requested.payload.task_id,
+      approvalId: requested.payload.approval_id,
+      decision: "approve",
+    });
     await decided;
-    await turn.toolResult("toolu_1", JSON.stringify({ counter: 1 }));
-    turn.end();
+    await session.toolResult({
+      runtimeCallId: "toolu_1",
+      workerTaskId: "a1",
+      content: JSON.stringify({ counter: 1 }),
+    });
+    await session.endWorker("a1");
     await client.waitFor("task_finished");
 
     const { watch, catalog } = await watchConversation(conversationId());
@@ -355,14 +371,14 @@ describe("mia debug watch", () => {
     }
     const nodes = messages.filter((message): message is NodeMessage => message.op === "node");
     expect(nodes.map((node) => node.kind)).toEqual(["task", "tool_call"]);
-    expect(nodes[0]?.view.summary).toContain("change it");
+    expect(nodes[0]?.view.summary).toContain("task a1");
     expect(nodes.map(statusOf)).toEqual(["completed", "completed"]);
     expect(
       messages.filter((message) => message.op === "event" && message.parent === nodes[1]?.id)
         .length,
     ).toBeGreaterThan(0);
     expect(JSON.stringify(messages)).not.toContain("super-secret-value");
-    // The session's d1 server writes no body log, as a real MCP server does not, so its bodies are marked as not
+    // The session's fixture server writes no body log, as a real MCP server does not, so its bodies are marked as not
     // recorded, and not as something debug mode would add.
     expect(messages[0]).toMatchObject({
       op: "conversation",
@@ -439,10 +455,10 @@ describe("mia debug watch", () => {
 
   it("appends a fixture call's MCP request and response under it without a reload, in debug mode", async () => {
     const bodyLog = bodyLogPath();
-    const liveRuntime = new ScriptedRuntime();
+    const liveSessions = new ScriptedSessions();
     const liveServer = await startTestServer(
-      liveRuntime,
-      { mcpServers: { d1: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog } } },
+      liveSessions,
+      { mcpServers: { fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog } } },
       { debugMode: true },
     );
     // After every afterEach hook, so after the watch's teardown has closed its catalog.
@@ -455,16 +471,23 @@ describe("mia debug watch", () => {
     const page = await openPage(watch.url);
     await page.take(initialCount(catalog, liveId));
 
-    const next = liveRuntime.nextTurn();
-    await liveClient.submitText("read it");
-    const turn = await next;
-    turn.init();
-    expect((await turn.request("mcp__d1__read", {}, "toolu_read")).behavior).toBe("allow");
+    const session = await turnWithWorker(
+      { sessions: liveSessions, server: liveServer, client: liveClient },
+      { text: "read it", runtimeTaskId: "a1" },
+    );
+    expect(
+      (await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a1" }))
+        .behavior,
+    ).toBe("allow");
     writeBodyLog(bodyLog, [
       { direction: "request", body: { jsonrpc: "2.0", id: 3, method: "tools/call" } },
       { direction: "response", body: { jsonrpc: "2.0", id: 3, result: { unread: 3 } } },
     ]);
-    await turn.toolResult("toolu_read", JSON.stringify({ unread: 3 }));
+    await session.toolResult({
+      runtimeCallId: "toolu_read",
+      workerTaskId: "a1",
+      content: JSON.stringify({ unread: 3 }),
+    });
     await poll.fire();
     const call = await page.untilNode((node) => node.kind === "tool_call");
     const request = await page.untilNode((node) => node.kind === "mcp");
@@ -473,28 +496,34 @@ describe("mia debug watch", () => {
     expect(request.view.summary).toContain("MCP request");
     expect(response.view.summary).toContain("MCP response");
     expect(response.view.summary).toContain("unread");
-    turn.end();
+    await session.endWorker("a1");
     await liveClient.waitFor("task_finished");
   });
 
   it("appends a new command, a tool call, its result and an auto-rejection without a reload, and re-sends a status that changed", async () => {
     const { page, poll } = await watchWithPage();
-    const next = runtime.nextTurn();
-    const taskId = mustString(
-      ackResult(await client.submitText("summarise my inbox")).task_id,
-      "task id",
-    );
-    const turn = await next;
+    const session = await turnWithWorker(scripted, {
+      text: "summarise my inbox",
+      runtimeTaskId: "a1",
+    });
+    const taskId = (await client.waitFor("task_started")).payload.task_id;
     await poll.fire();
     const task = await page.untilNode((node) => node.id === `task:${taskId}`);
-    expect(task.view.summary).toContain("summarise my inbox");
+    expect(task.view.summary).toContain("task a1");
     expect(statusOf(task)).toBe("running");
 
     // An allowed call runs, and its result lands under it.
-    expect((await turn.request("mcp__d1__read", {}, "toolu_read")).behavior).toBe("allow");
-    await turn.toolResult("toolu_read", JSON.stringify({ unread: 3 }));
+    expect(
+      (await session.ask({ toolName: "mcp__fixture__read", toolUseId: "toolu_read", agentId: "a1" }))
+        .behavior,
+    ).toBe("allow");
+    await session.toolResult({
+      runtimeCallId: "toolu_read",
+      workerTaskId: "a1",
+      content: JSON.stringify({ unread: 3 }),
+    });
     await poll.fire();
-    const read = await page.untilNode((node) => node.view.summary.includes("mcp__d1__read"));
+    const read = await page.untilNode((node) => node.view.summary.includes("mcp__fixture__read"));
     await page.until(
       (message) =>
         message.op === "event" &&
@@ -502,28 +531,24 @@ describe("mia debug watch", () => {
         message.view.summary.includes("tool_result"),
     );
 
-    // A call the stream proposes shows as proposed; the policy then denies it with no event of its own for the
-    // row, so only the re-sent header can show the rejection.
-    await turn.emit({
-      type: "tool_proposed",
-      runtimeCallId: "toolu_forbidden",
-      parentCallId: null,
-      toolIdentity: "mcp__d1__forbidden",
-      arguments: {},
-      complete: true,
-      at: new Date().toISOString(),
-    });
+    // A call the policy denies is recorded denied as it is asked about, with no event of its own for the row, so
+    // only its header can show the rejection.
+    expect(
+      (
+        await session.ask({
+          toolName: "mcp__fixture__forbidden",
+          toolUseId: "toolu_forbidden",
+          agentId: "a1",
+        })
+      ).behavior,
+    ).toBe("deny");
     await poll.fire();
-    const proposed = await page.untilNode((node) =>
-      node.view.summary.includes("mcp__d1__forbidden"),
+    const denied = await page.untilNode((node) =>
+      node.view.summary.includes("mcp__fixture__forbidden"),
     );
-    expect(statusOf(proposed)).toBe("proposed");
-    expect((await turn.request("mcp__d1__forbidden", {}, "toolu_forbidden")).behavior).toBe("deny");
-    await poll.fire();
-    const denied = await page.untilNode((node) => node.id === proposed.id);
     expect(statusOf(denied)).toBe("denied");
 
-    turn.end();
+    await session.endWorker("a1");
     await client.waitFor("task_finished");
     await poll.fire();
     expect(statusOf(await page.untilNode((node) => node.id === task.id))).toBe("completed");
@@ -533,12 +558,10 @@ describe("mia debug watch", () => {
     const { page, poll } = await watchWithPage();
     await poll.fire();
     await poll.waiting();
-    const next = runtime.nextTurn();
-    await client.submitText("after an empty poll");
-    await next;
+    await turnWithWorker(scripted, { text: "after an empty poll", runtimeTaskId: "a1" });
     await poll.fire();
     const message = await page.next();
-    expect(message).toMatchObject({ op: "node", kind: "task" });
+    expect(message).toMatchObject({ op: "event", parent: "conversation" });
   });
 
   /** Starts a watch of `id` whose signal has already aborted, as a Ctrl-C before it listens. */
@@ -657,7 +680,7 @@ describe("mia debug watch", () => {
             id: newId("evt"),
             receivedAt: AT,
             conversationId: id,
-            type: "text_delta",
+            type: "reply_delta",
             payload: { text: "x".repeat(64 * 1024) },
           });
         return id;

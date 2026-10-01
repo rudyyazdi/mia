@@ -444,7 +444,7 @@ export class RecordWriter {
     conversationId: string;
     text: string;
     clientId: string | null;
-    delegation?: { turnId: string; runtimeTaskId: string; delegationCallId: string };
+    delegation?: { turnId: string | null; runtimeTaskId: string; delegationCallId: string };
   }): void {
     this.catalog.insert("tasks", {
       id: input.id,
@@ -475,7 +475,6 @@ export class RecordWriter {
     requestedModel: string;
     requestedEffort: Effort;
     provenanceSetId: string | null;
-    executionEpoch: number;
   }): void {
     this.catalog.insert("executions", {
       id: input.id,
@@ -487,7 +486,6 @@ export class RecordWriter {
       requested_model: input.requestedModel,
       requested_effort: input.requestedEffort,
       provenance_set_id: input.provenanceSetId,
-      execution_epoch: input.executionEpoch,
       status: "running",
       started_at: input.startedAt,
     });
@@ -671,13 +669,11 @@ export class RecordWriter {
     id: string;
     requestedAt: string;
     toolCallId: string;
-    executionEpoch: number;
     requestingEventId: string | null;
   }): void {
     this.catalog.insert("approvals", {
       id: input.id,
       tool_call_id: input.toolCallId,
-      execution_epoch: input.executionEpoch,
       status: "pending",
       requesting_event_id: input.requestingEventId,
       requested_at: input.requestedAt,

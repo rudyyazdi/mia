@@ -98,7 +98,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
   };
 
   const createServerForRequest = (ctx: McpRequestContext): McpServer => {
-    const server = new McpServer({ name: "d1-controlled-fixture", version: "0.1.0" });
+    const server = new McpServer({ name: "controlled-fixture", version: "0.1.0" });
     const callId = () => `fx-${ctx.requestId}-${randomUUID().slice(0, 8)}`;
 
     server.registerTool(

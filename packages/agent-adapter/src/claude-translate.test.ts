@@ -18,12 +18,12 @@ const init = {
   subtype: "init",
   session_id: "session",
   model: "claude-test",
-  tools: ["mcp__d1__read"],
-  mcp_servers: [{ name: "d1", status: "connected" }],
+  tools: ["mcp__fixture__read"],
+  mcp_servers: [{ name: "fixture", status: "connected" }],
   claude_code_version: "2.1.0",
 };
 
-const toolUse = { type: "tool_use", id: "toolu_1", name: "mcp__d1__read", input: { key: 1 } };
+const toolUse = { type: "tool_use", id: "toolu_1", name: "mcp__fixture__read", input: { key: 1 } };
 
 describe("ClaudeTranslator", () => {
   it("reports the init model and keeps the whole init message as evidence", () => {
@@ -56,7 +56,7 @@ describe("ClaudeTranslator", () => {
         type: "tool_proposed",
         runtimeCallId: "toolu_1",
         parentCallId: null,
-        toolIdentity: "mcp__d1__read",
+        toolIdentity: "mcp__fixture__read",
         arguments: {},
         complete: false,
         at,
@@ -76,7 +76,7 @@ describe("ClaudeTranslator", () => {
       type: "tool_proposed",
       runtimeCallId: "toolu_1",
       parentCallId: null,
-      toolIdentity: "mcp__d1__read",
+      toolIdentity: "mcp__fixture__read",
       arguments: { key: 1 },
       complete: true,
       at,
@@ -159,7 +159,7 @@ describe("taskEventsOf", () => {
       task_id: "a1",
       tool_use_id: "toolu_delegation",
       description: "read",
-      prompt: "call d1.read",
+      prompt: "call fixture.read",
       is_backgrounded: true,
       subagent_type: "mia-worker",
     });
@@ -177,7 +177,7 @@ describe("taskEventsOf", () => {
         runtimeTaskId: "a1",
         delegationCallId: "toolu_delegation",
         description: "read",
-        prompt: "call d1.read",
+        prompt: "call fixture.read",
         background: true,
         at,
       },

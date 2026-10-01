@@ -1,28 +1,31 @@
-import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { join } from "node:path";
 import { match } from "ts-pattern";
 import {
   bodyLogFor,
-  policyFor,
   hookEvidenceFrom,
+  policyFor,
+  readManagerCall,
+  untilAborted,
+  type GateDecision,
+  type GateHandler,
+  type GateRequest,
+  type Profile,
   type RuntimeFileRead,
   type RuntimeFileReader,
-  type RuntimeEvent,
-  type PermissionDecision,
-  type PermissionRequest,
-  type Profile,
-  type TurnHandle,
-  type TurnOptions,
-  type TurnResult,
+  type SessionEvent,
+  type SessionHandle,
+  type SessionOptions,
+  type SessionResult,
 } from "@mia/agent-adapter";
-import { Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
+import { createKernel, Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
 import {
   errorMessage,
-  type ApprovalStatus,
+  type ClientCommand,
   type ClientDiagnostics,
   type Decision,
+  type ErrorCode,
 } from "@mia/protocol";
-import { type Catalog, type NewId, type RecordWriter, type StoredObject } from "@mia/records";
+import type { Catalog, NewId, RecordWriter } from "@mia/records";
 import {
   extractDeclaredArtifact,
   type Capture,
@@ -30,123 +33,117 @@ import {
   type Retention,
 } from "./artifact-capture.ts";
 import type { ArtifactCollector } from "./artifact-collector.ts";
+import { ClientOwnership, recordHeartbeat, type Delivery } from "./client-ownership.ts";
 import {
-  fail,
-  openConversationMachine,
-  ConversationEngine,
-  SHARED_KINDS,
-  type Committed,
-  prepareStart,
-  type CommandContext,
-  type CommandResult,
-} from "./engine-common.ts";
+  decideConversation,
+  type ConversationEvent,
+  type ConversationRejection,
+} from "./decide-conversation.ts";
+import type { ConversationState } from "./conversation-state.ts";
+import type { EngineEffect, GateAnswer, SessionStart } from "./engine-effects.ts";
 import {
-  callById,
-  callsOf,
-  type CallState,
-  type ConversationState,
-  type TaskState,
-} from "./conversation-state.ts";
+  commitEvents,
+  committedEvents,
+  eventSequence,
+  type EngineRecord,
+  type EventChange,
+} from "./engine-records.ts";
 import {
   MAX_BODY_LOG_BYTES,
   mcpBodiesFrom,
   unrecordedBodies,
   type BodyReadPoint,
   type McpBody,
-  type McpBodyRecord,
 } from "./mcp-bodies.ts";
 import {
-  decideConversation,
-  releasedBy,
-  type CapturedOutput,
-  type ConversationEvent,
-  type ConversationRejection,
-  type ConversationStartEvent,
-  type OutputIds,
-  type PromptAbandonedEvent,
-  type RuntimeReport,
-  type UnresultedBodies,
-} from "./decide-conversation.ts";
-import type { EngineEffect, Origin, PermissionAnswer, TurnStart } from "./engine-effects.ts";
-import type { EventChange } from "./engine-records.ts";
-import {
+  MAX_CONVERSATION_FILE_BYTES,
   agentPromptObject,
   nameProvenance,
-  type ProvenancePlan,
+  prepareConversationProvenance,
+  workerPromptObject,
   type ServerIdentity,
 } from "./provenance.ts";
-import {
-  abandonedPromptDenial,
-  bindToolResult,
-  isReleased,
-  releasedWithoutResult,
-} from "./transitions.ts";
+import type { CapturedOutput, SessionFile } from "./recorded-outputs.ts";
 
-/** What the engine needs from an adapter; the real ClaudeCodeAdapter and scripted test substitutes both satisfy it. */
-export interface TurnRunner {
-  submitTurn(options: TurnOptions): TurnHandle;
+export interface CommandContext {
+  connectionId: string;
+  clientId: string;
+  commandId: string;
+  clientBuild: unknown;
 }
 
-/** The answer to a task-scoped command naming a task that is not the active one. */
-const notActiveTask = (taskId: string): CommandResult =>
-  fail("not_found", `task ${taskId} is not the active task`);
+export type CommandResult =
+  { ok: true; result?: Record<string, unknown> } | { ok: false; code: ErrorCode; message: string };
 
-/**
- * How many permission prompts the server holds open at once, across tasks, waiting for the user's decision. A
- * call that would ask beyond it is denied without asking (evaluatePermission), so no approval is recorded that
- * cannot be held. Far above what one turn asks in parallel; it bounds a runtime that keeps asking.
- */
-export const MAX_HELD_PROMPTS = 32;
+const fail = (code: ErrorCode, message: string): CommandResult => ({ ok: false, code, message });
 
-/** The answer to a prompt still held once its turn has ended, recorded or not: the runtime is gone, and nothing was released. */
-const TURN_ENDED: PermissionDecision = {
-  behavior: "deny",
-  message: "Mia: the turn ended before the user decided; this call was not released.",
-};
-
-/** The answer to a permission request of a task that is no longer the active one. */
-const NO_ACTIVE_TASK: PermissionDecision = {
-  behavior: "deny",
-  message: "Mia has no active task for this call.",
-};
-
-/** The answer to a permission request whose records did not commit: nothing was requested, held or released. */
-const NOT_RECORDED: PermissionDecision = {
-  behavior: "deny",
-  message: "Mia could not record this call; it was not released.",
-};
-
-/**
- * The answer to a permission request that was recorded but never answered, which a committed request's transition
- * rules out; nothing is held or released for it.
- */
-const UNANSWERED: PermissionDecision = {
-  behavior: "deny",
-  message: "Mia could not answer this call; it was not released.",
-};
-
-/** The permission request `decidePermission` is dispatching, and what its `answer_permission` effect took. */
-interface Asking {
-  taskId: string;
-  /** Aborted once the runtime drops the prompt. */
-  abandoned: AbortSignal;
-  /** True until the request's dispatch returns (see `abandon`). */
-  dispatching: boolean;
-  /** What answers the runtime, once `answer_permission` has been performed: at once, or when the held prompt settles. */
-  answer: Promise<PermissionDecision> | null;
-  /** The call whose prompt was abandoned during the dispatch, whose expiry follows it (see `abandon`). */
-  expireAfter: string | null;
+/** What runs the manager agent's sessions: the real `ClaudeCodeSessions`, or a test's scripted runtime. */
+export interface SessionRunner {
+  open(options: SessionOptions): SessionHandle;
 }
 
-/** The task submission being committed, and the turn its `start_turn` effect gave, once performed. */
-interface Submitting {
-  turn: TurnStart | null;
+export interface EngineDeps {
+  profile: Profile;
+  catalog: Catalog;
+  writer: RecordWriter;
+  sessions: SessionRunner;
+  identity: ServerIdentity;
+  /**
+   * A fresh deadline for one batch of evidence reads and stores: a conversation start's files and snapshots, a tool
+   * result's declared output and body log, a session's transcript and hook evidence. A read it abandons is recorded
+   * unreadable; a start it interrupts is refused.
+   */
+  evidenceReadDeadline: () => AbortSignal;
+  /** How long a session's kill may take to be observed before its cancellation is recorded unknown. */
+  stopDeadline: () => AbortSignal;
+  /**
+   * How long a worker agent's call may wait for the runtime to report that worker agent's start (stdout and the gate
+   * race), before it is denied as unattributed.
+   */
+  attributionDeadline: () => AbortSignal;
+  /** Reads runtime-written and conversation files: `readRuntimeFile`, or a test's own. */
+  readEvidence: RuntimeFileReader;
+  /** Captures a tool output a completed call declared: `collectArtifact`, or a test's own. */
+  collectArtifact: ArtifactCollector;
+  /** Injected randomness for every id the engine records; transitions take it as an input. */
+  newId: NewId;
+  /** Injected randomness for the UUID each message is sent to the runtime under. */
+  newRuntimeMessageId: () => string;
+  /** The clock: each transaction reads it once, and so does each event sent. */
+  now: () => Date;
+  /**
+   * Debug mode, chosen once per server start: each conversation records `captured_in_debug_mode`, and the MCP bodies
+   * of each released call to a server that writes a body log.
+   */
+  debugMode: boolean;
+  log: (message: string) => void;
 }
 
 /**
- * One conversation's machine (see `decideConversation`), on a kernel of its own: the catalog numbers events per
- * conversation, and a kernel's change feed needs one order across everything it carries (see `Sequenced`).
+ * How many held calls the gate keeps open at once, across tasks, waiting for the user's decision. A call that would
+ * ask beyond it is denied without asking, so no approval is recorded that cannot be held.
  */
+export const MAX_HELD_CALLS = 32;
+
+/** How many gate requests may wait for their worker agent's start at once; beyond it they are denied unattributed. */
+export const MAX_ATTRIBUTION_WAITS = 32;
+
+/** A few readers of one conversation at once, each a page behind at most before it reads the catalog again. */
+const FEED_LIMITS: FeedLimits = { subscribers: 8, buffered: 256 };
+
+const NOT_RECORDED: GateDecision = {
+  behavior: "deny",
+  message: "Mia could not record this call; it was not run.",
+};
+const NO_CONVERSATION: GateDecision = {
+  behavior: "deny",
+  message: "Mia has no conversation for this call; it was not run.",
+};
+const ABANDONED: GateDecision = {
+  behavior: "deny",
+  message: "Mia: the call was dropped before the user decided; it was not run.",
+};
+
 type ConversationMachine = Machine<
   ConversationState | null,
   ConversationEvent,
@@ -154,873 +151,256 @@ type ConversationMachine = Machine<
   EventChange
 >;
 
-/**
- * Bounds of each conversation's change feed (see `FeedLimits`). Nothing subscribes yet: reconnect replay (D3) and the
- * debug watch (#6) will. A few readers of one conversation at once, each a page of events behind at most before it
- * reads the catalog again.
- */
-const CONVERSATION_FEED_LIMITS: FeedLimits = { subscribers: 8, buffered: 256 };
-
-/**
- * A dispatch's rejection, narrowed to the `kinds` the event's own transition refuses with. The other kinds cannot
- * reach the engine's machine, which is always started and never started twice (`not_started`, `already_started`), so
- * one that does is a bug, and it throws.
- */
-const expectRejection = <Kind extends ConversationRejection["kind"]>(
-  rejection: ConversationRejection,
-  kinds: readonly Kind[],
-): Extract<ConversationRejection, { kind: Kind }> => {
-  const isExpected = (
-    candidate: ConversationRejection,
-  ): candidate is Extract<ConversationRejection, { kind: Kind }> =>
-    new Set<string>(kinds).has(candidate.kind);
-  if (isExpected(rejection)) return rejection;
-  throw new Error(`unexpected conversation rejection: ${rejection.kind}`);
-};
-
-/**
- * What a task-scoped command is allowed to act on. `rejected` and `no_active_task` carry the answer
- * to send back, so a caller that has nothing to add returns it unread; `approvalDecision` looks a
- * resolved approval up before falling back to it.
- */
-type AddressedTask =
-  | { kind: "active"; task: TaskState }
-  | { kind: "rejected"; result: CommandResult }
-  | { kind: "no_active_task"; result: CommandResult };
-
-export interface EngineDeps {
-  profile: Profile;
-  catalog: Catalog;
-  writer: RecordWriter;
-  adapter: TurnRunner;
-  /** Computed once at startup; every conversation's provenance records it. */
-  identity: ServerIdentity;
-  /**
-   * A fresh deadline for one batch of evidence reads and stores: a finished turn's transcript and hook evidence, or
-   * a starting conversation's prompt, architecture document and provenance snapshots. A turn-end read still
-   * pending when it aborts is recorded unreadable, so a read that never returns cannot keep the task from
-   * finishing; a store it interrupts is recorded not retained (an fsync already under way still completes). A
-   * conversation start it interrupts is refused.
-   */
-  evidenceReadDeadline: () => AbortSignal;
-  /**
-   * Reads the transcript and the hook evidence at turn end, the agent prompt and architecture document at
-   * conversation start, and in debug mode a body log at a tool result or turn end: `readRuntimeFile`, or a test's own.
-   */
-  readEvidence: RuntimeFileReader;
-  /** Captures a tool output a completed call declared: `collectArtifact`, or a test's own. */
-  collectArtifact: ArtifactCollector;
-  /**
-   * Names the conversations, tasks, executions, tool calls, approvals, events, provenance sets and entries, artifacts,
-   * artifact links and diagnostics the engine records (see RecordWriter), and every event it sends: `newId`. Injected
-   * randomness, so a transition's ids are chosen before its records are written and can refer to each other. The
-   * engine draws every id a transition may record before deciding it and hands them in with its event, since the
-   * pure transitions have no way to draw one; one whose outcome records fewer leaves the rest unused.
-   */
-  newId: NewId;
-  /**
-   * The clock. Each transaction reads it once, and every row it writes carries that time; a heartbeat's diagnostics
-   * row, written outside any transaction, reads it too, and so does each event sent, for its `server_time`.
-   */
-  now: () => Date;
-  /**
-   * Debug mode, chosen once per server start: each conversation started while it is on records a
-   * `captured_in_debug_mode` event, so a viewer can tell detail that was never captured from detail that is absent,
-   * and records the MCP request and response bodies of each call to a server that writes a body log. Off records
-   * exactly what the engine records without it.
-   */
-  debugMode: boolean;
-  log: (message: string) => void;
+/** The runtime session a conversation runs: a resource the engine owns, reported into the machine that opened it. */
+interface OpenSession {
+  handle: SessionHandle;
+  machine: ConversationMachine;
+  /** Settles once the session's end has been recorded (or given up on). */
+  ended: Promise<void>;
 }
 
-/** What a turn-end read gives to retain: the bytes read, or why they could not be. */
-const evidenceCapture = (content: Exclude<RuntimeFileRead, { status: "absent" }>): Capture =>
-  match(content)
-    .with({ status: "read" }, ({ bytes }): Capture => ({ status: "retained", bytes }))
-    .with({ status: "unreadable" }, ({ reason }): Capture => ({
-      status: "failed",
-      reason: `unreadable: ${reason}`,
-    }))
-    .exhaustive();
-
-/**
- * The one conversation start awaiting its reads and stores. Shutdown abandons its I/O and refuses it. A disconnect
- * of the connection that asked does not: the start still commits, under the connection its client has adopted since
- * or none (`startConnection`), so the client's resend of the same message_id on a new connection gets the start's
- * reply and adopts the conversation.
- */
-interface PendingStart {
-  connectionId: string;
-  disconnected: boolean;
-  abandon: AbortController;
+/** A gate request being dispatched, and the answer its `answer_gate` effect gave once performed. */
+interface Asking {
+  abandoned: AbortSignal;
+  answer: Promise<GateDecision> | null;
 }
 
-/** The answer to a start that recorded nothing, because `error` stopped it. */
-const notCreated = (error: unknown): CommandResult =>
-  fail("record_failure", `could not create conversation: ${errorMessage(error)}`);
-
-/** The answer to a start whose I/O shutdown abandoned, or null while it was not. */
-const abandonedStart = (pending: PendingStart): CommandResult | null =>
-  pending.abandon.signal.aborted
-    ? fail(
-        "invalid_state",
-        `conversation start abandoned: ${errorMessage(pending.abandon.signal.reason)}`,
-      )
-    : null;
-
-/**
- * The runtime running the active task's turn: resources the engine owns, not state (see ConversationState). Set once
- * the adapter has started the turn, and cleared with the task once its end is recorded.
- */
-interface ActiveTurn {
-  taskId: string;
-  handle: TurnHandle;
-  /** Settles once the turn's end has been recorded (or failed to be) and the task cleared. */
-  finished: Promise<void>;
+/** What the gateway and the server need from the engine. */
+export interface CommandEngine {
+  readonly conversation: { readonly id: string } | null;
+  handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult>;
+  adoptConnection(connectionId: string, clientId: string): boolean;
+  onDisconnect(connectionId: string): void;
+  attachDelivery(delivery: Delivery): () => void;
+  shutdown(turnWait: AbortSignal): Promise<void>;
 }
 
 /**
- * Conversation/task coordinator plus approval and interruption controller. One conversation, one task,
- * one active client. The rules live in ./transitions.ts, and ./decide-conversation.ts composes them into pure
- * transitions for every change to a conversation, its start and the few memory-only changes included. Each
- * conversation is one kernel machine (see `openConversation`): a dispatch decides, commits the records, moves the
- * machine's state on, then performs the effects, so the engine never changes a conversation's state itself.
+ * The engine: one conversation at a time, whose manager agent never blocks. It owns the conversation's kernel machine
+ * (the rules are ./decide-conversation.ts), the manager agent's runtime session, and the held calls. Every change goes
+ * through a dispatch that decides, commits the records, moves the state on and then performs the effects; the
+ * runtime's reports and the gate's requests arrive as events of their own, after any I/O they need (captures, body
+ * logs, evidence) is done at this boundary.
  */
-export class Engine extends ConversationEngine<
-  ConversationState,
-  ConversationEvent,
-  ConversationRejection
-> {
-  /** The runtime running the active task's turn, if one has started (see ActiveTurn). */
-  private running: ActiveTurn | null = null;
-  /**
-   * Aborted when shutdown stops waiting: a turn-end evidence read still pending is abandoned so the turn is
-   * recorded before the catalog closes. Not at the start of shutdown, so a turn it kills keeps its evidence.
-   */
+export class Engine implements CommandEngine {
+  readonly clients = new ClientOwnership();
+  /** The active conversation's machine; replaced only through a start's activation. */
+  private machine: ConversationMachine | null = null;
+  private session: OpenSession | null = null;
+  private shuttingDown = false;
+  /** Aborted by shutdown, so I/O still pending (a start's reads, evidence stores) is abandoned. */
   private readonly stopping = new AbortController();
-  /**
-   * The conversation start awaiting its I/O, if any. One at a time: a second start is refused as busy meanwhile,
-   * so at most one command holds the gateway's reply across an await.
-   */
-  private starting: PendingStart | null = null;
-  /**
-   * The runtime's permission prompts waiting for the user's decision, keyed by approval id, each held by the
-   * `answer_permission` effect of the commit that requested its approval. Each is answered once: by an `answer_prompt`
-   * effect after a commit, by its abandonment, or once its turn has ended (startTurn).
-   */
-  private readonly prompts = new Holds<PermissionDecision>(MAX_HELD_PROMPTS);
-  /**
-   * The permission request `decidePermission` is dispatching, or null outside that dispatch. The request's
-   * `answer_permission` effect writes its answer here; the dispatch is synchronous, so at most one is ever set.
-   */
+  /** One conversation start at a time awaits its reads and stores. */
+  private starting = false;
+  private readonly held = new Holds<GateDecision>(MAX_HELD_CALLS);
   private asking: Asking | null = null;
-  /**
-   * The task submission `submitText` is committing, or null outside that commit. The submission's `start_turn` effect
-   * writes its turn here, and `submitText` starts it once the commit has returned, not while the effect is performed
-   * (see `start_turn`); at most one is ever set.
-   */
-  private submitting: Submitting | null = null;
+  /** Gate requests waiting for their worker agent's start, by the runtime's task id (MAX_ATTRIBUTION_WAITS). */
+  private readonly attributionWaits = new Map<string, (() => void)[]>();
+  /** The handler the session decides its calls with; one per engine, so it can be told from a successor's. */
+  private readonly decide: GateHandler = (request) => this.decideGate(request);
 
-  constructor(private readonly deps: EngineDeps) {
-    super(deps);
+  constructor(private readonly deps: EngineDeps) {}
+
+  /** The active conversation's state as it is now; null before the first start. */
+  get conversation(): ConversationState | null {
+    return this.machine?.state ?? null;
   }
 
-  /** The runtime running the active task's turn, if any. */
-  get turn(): ActiveTurn | null {
-    return this.running;
-  }
-
-  /** The active task, if there is one. */
-  private get task(): TaskState | null {
-    return this.conversation?.task ?? null;
-  }
-
-  /** The active task if it is still the one `taskId` names: a callback of a task that has ended gets null. */
-  private taskOf(taskId: string): TaskState | null {
-    const task = this.task;
-    return task?.id === taskId ? task : null;
-  }
-
-  /** The client and connection a transition decided now records its events under. */
-  private get origin(): Origin {
+  private get origin() {
     return this.clients.origin;
-  }
-
-  /** The conversation every guarded command and runtime callback operates on; callers check for one first. */
-  private get activeConversation(): ConversationState {
-    const conversation = this.conversation;
-    if (!conversation) throw new Error("engine has no active conversation");
-    return conversation;
   }
 
   // ---------------------------------------------------------------- event plumbing
 
   /**
-   * A new conversation's machine, at null until its start is dispatched into it, on a kernel of its own (see
-   * `ConversationMachine`). The kernel commits the records with `commitEvents` in one catalog transaction and reads the
-   * clock once per dispatch, so the transition rows of one commit (see `EngineDeps.now`) agree on when it happened. A
-   * commit that throws keeps the state and performs no effect, so nothing is released or delivered. After a commit
-   * each effect runs on its own: one that throws is logged as a delivery failure, never reported as a persistence
-   * failure, and the records, the state and the remaining effects stand. An effect may not dispatch: the kernel
-   * fails a nested dispatch without committing it, so nothing an effect calls may call back into the engine
-   * synchronously (a runtime reports what an interrupt causes only after `interrupt` returns; see `TurnHandle`). Only
-   * the machine is kept: nothing reads the kernel's change feed yet, until reconnect replay (D3) or the debug watch
-   * (#6) keeps the kernel beside it.
+   * A new conversation's machine, at null until its start is dispatched into it, on a kernel of its own: the kernel
+   * commits the records in one catalog transaction and reads the clock once per dispatch. A commit that throws keeps
+   * the state and performs no effect. After a commit each effect runs on its own: one that throws is logged, and the
+   * records, the state and the remaining effects stand. An effect may not dispatch: the kernel refuses a nested
+   * dispatch, so a follow-up is dispatched once the current dispatch has returned.
    */
   private openConversation(conversationId: string): ConversationMachine {
-    return openConversationMachine({
-      conversationId,
-      decide: decideConversation,
-      writer: this.deps.writer,
-      catalog: this.deps.catalog,
+    const kernel = createKernel<EngineRecord, EventChange, EngineEffect>({
+      commit: (records) => commitEvents(this.deps.writer, records),
+      perform: (effect, changes) => this.perform(effect, { machine, conversationId, changes }),
+      reportEffectFailure: (error) =>
+        this.deps.log(`delivery failed after commit; records stand: ${errorMessage(error)}`),
+      replay: committedEvents(this.deps.catalog, conversationId),
       now: () => this.deps.now(),
-      log: this.deps.log,
-      limits: CONVERSATION_FEED_LIMITS,
-      perform: (effect, { machine, changes }) =>
-        this.perform(effect, { machine, conversationId, changes }),
+      limits: FEED_LIMITS,
     });
+    const machine: ConversationMachine = kernel.machine(decideConversation, null);
+    return machine;
   }
 
-  /** Dispatch one event into the active conversation's machine; callers check for a conversation first. */
-  private dispatch(event: ConversationEvent): Dispatched<ConversationRejection, EventChange> {
-    if (!this.machine) throw new Error("engine has no active conversation");
-    return this.machine.dispatch(event);
+  /** Dispatch a report into `machine`: nothing waits on it, so a refusal or a failed commit is logged. */
+  private report(
+    machine: ConversationMachine,
+    event: ConversationEvent,
+  ): Dispatched<ConversationRejection, EventChange> | null {
+    try {
+      const dispatched = machine.dispatch(event);
+      if (dispatched.kind === "rejected")
+        this.deps.log(`${event.kind} not applied: ${dispatched.rejection.kind}`);
+      if (dispatched.kind === "failed")
+        this.deps.log(`${event.kind} not recorded: ${errorMessage(dispatched.error)}`);
+      return dispatched;
+    } catch (error) {
+      this.deps.log(`${event.kind} failed: ${errorMessage(error)}`);
+      return null;
+    }
   }
 
-  /**
-   * Dispatch an event its transition never refuses, and commit it or throw: with the commit's own error when its
-   * records did not commit, and as a bug when the transition refused it after all.
-   */
-  private dispatchUnrefused(event: ConversationEvent): void {
-    const dispatched = this.dispatch(event);
-    if (dispatched.kind === "rejected") expectRejection(dispatched.rejection, []);
-    if (dispatched.kind === "failed") throw dispatched.error;
+  private drawn() {
+    return { origin: this.origin, newId: this.deps.newId };
   }
 
-  /**
-   * Dispatch a memory-only transition (see `memoryOnly` in ./decide-conversation.ts): it records nothing, so a
-   * catalog that cannot commit does not refuse it, and only a dispatch nested inside another's effects fails it. A
-   * rejection (the task or call it names is gone, or nothing is pending) changes nothing.
-   */
-  private dispatchMemoryOnly(event: ConversationEvent): void {
-    const dispatched = this.dispatch(event);
-    if (dispatched.kind === "failed")
-      this.deps.log(`could not apply ${event.kind}: ${errorMessage(dispatched.error)}`);
-  }
-
-  /**
-   * Perform one effect of a committed transition of conversation `conversationId`, whose machine is `machine`, once
-   * that machine's state has moved on. It reads the connection, the held prompts and the active turn as they are now,
-   * not as they were when the effect was queued.
-   */
-  private perform(effect: EngineEffect, committed: Committed<ConversationMachine>): void {
+  private perform(
+    effect: EngineEffect,
+    committed: {
+      machine: ConversationMachine;
+      conversationId: string;
+      changes: readonly EventChange[];
+    },
+  ): void {
+    const { machine, conversationId, changes } = committed;
+    const serverTime = this.deps.now().toISOString();
     match(effect)
-      .with({ kind: SHARED_KINDS }, (shared) => this.performShared(shared, committed))
-      .with({ kind: "answer_prompt" }, ({ approvalId, decision }) =>
-        this.prompts.reply(approvalId, decision),
+      .with({ kind: "activate_conversation" }, ({ origin }) => {
+        this.machine = machine;
+        this.clients.activate(origin);
+      })
+      .with({ kind: "deliver_event" }, ({ eventId, event }) =>
+        this.clients.deliver(event, {
+          id: eventId,
+          conversationId,
+          sequence: eventSequence(changes, eventId),
+          serverTime,
+        }),
       )
-      .with({ kind: "answer_permission" }, ({ answer }) => {
+      .with({ kind: "notify_tool_call" }, ({ payload }) =>
+        this.clients.deliver(
+          { type: "tool_call", payload },
+          { id: this.deps.newId("evt"), conversationId, sequence: null, serverTime },
+        ),
+      )
+      .with({ kind: "open_session" }, ({ session }) => this.openSession(machine, session))
+      .with({ kind: "send_message" }, ({ text, runtimeMessageId }) => {
+        if (this.session?.handle.send(text, runtimeMessageId) === true) return;
+        // Recorded as a transition of its own, once this dispatch has returned: an effect may not dispatch.
+        queueMicrotask(() =>
+          this.report(machine, { kind: "message_undelivered", ...this.drawn(), runtimeMessageId }),
+        );
+      })
+      .with({ kind: "stop_session" }, () => {
+        this.session?.handle
+          .stop(this.deps.stopDeadline())
+          .catch((error: unknown) => this.deps.log(`stop failed: ${errorMessage(error)}`));
+      })
+      .with({ kind: "answer_gate" }, ({ answer }) => {
         const asking = this.asking;
-        if (!asking) throw new Error("no permission request is being dispatched");
-        if (asking.answer) throw new Error("a permission request is answered once");
+        if (!asking) throw new Error("no gate request is being dispatched");
+        if (asking.answer) throw new Error("a gate request is answered once");
         asking.answer = this.takeAnswer(asking, answer);
       })
-      .with({ kind: "start_turn" }, ({ turn }) => {
-        if (!this.submitting) throw new Error("no task submission is being committed");
-        if (this.submitting.turn) throw new Error("a task submission starts one turn");
-        this.submitting.turn = turn;
-      })
-      .with({ kind: "interrupt_runtime" }, ({ taskId }) => {
-        // A task whose turn never started (the adapter threw as it submitted it) has no runtime to interrupt.
-        const turn = this.running;
-        if (turn?.taskId !== taskId) return;
-        turn.handle
-          .interrupt()
-          .catch((error: unknown) => this.deps.log(`interrupt failed: ${String(error)}`));
+      .with({ kind: "answer_held" }, ({ approvalId, decision }) => {
+        this.held.reply(approvalId, decision);
       })
       .exhaustive();
   }
 
-  // ---------------------------------------------------------------- commands
-
-  /**
-   * Why a conversation cannot start for `ctx` now, or null; checked again once the start's I/O has settled. A start
-   * whose connection has closed (`disconnected`) yields only to another client: its own client may already have
-   * reconnected and adopted the conversation, to resend this very start.
-   */
-  private refuseStart(ctx: CommandContext, disconnected = false): CommandResult | null {
-    if (this.shuttingDown) return fail("invalid_state", "the server is shutting down");
-    if (this.task)
-      return fail(
-        "busy",
-        "a task is running; interrupt it or wait before starting a new conversation",
-      );
-    if (
-      this.conversation &&
-      this.clients.connectionId &&
-      this.clients.connectionId !== ctx.connectionId &&
-      !(disconnected && this.clients.clientId === ctx.clientId)
-    ) {
-      return fail("busy", "another client owns the active conversation");
-    }
-    return null;
-  }
-
-  /**
-   * Reads the conversation's files and stores its provenance snapshots before the transaction opens, then
-   * re-checks the guards, because a task, another client or shutdown may have arrived while it awaited.
-   */
-  async startConversation(ctx: CommandContext): Promise<CommandResult> {
-    const refused = this.refuseStart(ctx);
-    if (refused) return refused;
-    if (this.starting) return fail("busy", "another conversation is starting");
-    const pending: PendingStart = {
-      connectionId: ctx.connectionId,
-      disconnected: false,
-      abandon: new AbortController(),
-    };
-    this.starting = pending;
-    try {
-      const signal = AbortSignal.any([pending.abandon.signal, this.deps.evidenceReadDeadline()]);
-      let plan: ProvenancePlan<StoredObject>;
-      try {
-        plan = await prepareStart(this.deps, ctx, signal);
-      } catch (error) {
-        return abandonedStart(pending) ?? notCreated(error);
-      }
-      return (
-        abandonedStart(pending) ??
-        this.refuseStart(ctx, pending.disconnected) ??
-        this.commitStart({ ctx, plan, connected: !pending.disconnected })
-      );
-    } finally {
-      this.starting = null;
-    }
-  }
-
-  /**
-   * Records a conversation whose provenance is stored, and makes it the active one. When the connection that asked
-   * has closed meanwhile (`connected` false), the conversation belongs to its client, through the connection that
-   * client has adopted since, or none, as `onDisconnect` would have left it.
-   */
-  private commitStart(input: {
-    ctx: CommandContext;
-    plan: ProvenancePlan<StoredObject>;
-    connected: boolean;
-  }): CommandResult {
-    const { ctx, plan, connected } = input;
-    const provenance = nameProvenance(plan, this.deps.newId);
-    const prompt = agentPromptObject(provenance);
-    const event: ConversationStartEvent = {
-      kind: "start_conversation",
-      origin: { clientId: ctx.clientId, connectionId: this.startConnection(ctx, connected) },
-      closes: this.conversation?.id ?? null,
-      provenance,
-      promptFile: prompt === null ? null : this.deps.writer.objects.pathFor(prompt.digest),
-      conversationsRoot: this.deps.catalog.paths.conversations,
-      debugMode: this.deps.debugMode,
-      ids: {
-        conversation: this.deps.newId("conv"),
-        runtimeConversation: randomUUID(),
-        provenanceRecorded: this.deps.newId("evt"),
-        started: this.deps.newId("evt"),
-        captured: this.deps.newId("evt"),
-      },
-    };
-    // The conversation starting has a machine of its own, from no state (see ./decide-conversation.ts); the one it
-    // closes is named by id. A start that does not commit drops the new machine; one that does activates it
-    // (`activate_conversation`).
-    const machine = this.openConversation(event.ids.conversation);
-    let dispatched: Dispatched<ConversationRejection, EventChange>;
-    try {
-      dispatched = machine.dispatch(event);
-    } catch (error) {
-      return notCreated(error);
-    }
-    if (dispatched.kind === "failed") return notCreated(dispatched.error);
-    // Unreachable: a machine at null decides a start.
-    if (dispatched.kind === "rejected")
-      return notCreated(new Error(`start refused: ${dispatched.rejection.kind}`));
+  /** Open the manager agent's session for the conversation `machine` runs. */
+  private openSession(machine: ConversationMachine, start: SessionStart): void {
     const conversation = machine.state;
-    // Unreachable: a committed start leaves its conversation as its machine's state.
-    if (!conversation) throw new Error("a conversation start committed without its conversation");
-    return {
-      ok: true,
-      result: {
-        conversation_id: conversation.id,
-        provenance_set_id: conversation.provenanceSetId,
-      },
-    };
-  }
-
-  /**
-   * The connection a start reaches its client through: the one that asked, or, once that one has closed, the one its
-   * client has adopted since, if any. Another client's connection is never it: before the first conversation, any
-   * client's first command adopts a connection (`adoptConnection`), and `refuseStart` guards ownership only once
-   * there is a conversation to own.
-   */
-  private startConnection(ctx: CommandContext, connected: boolean): string | null {
-    if (connected) return ctx.connectionId;
-    return this.clients.clientId === ctx.clientId ? this.clients.connectionId : null;
-  }
-
-  submitText(
-    ctx: CommandContext,
-    payload: { conversation_id: string; text: string },
-  ): CommandResult {
-    const guard = this.guard(ctx, payload.conversation_id);
-    if (guard) return guard;
-    // Restored, not cleared, so a dispatch nested inside this one's effects could not take the outer submission's slot.
-    const previous = this.submitting;
-    const submitting: Submitting = { turn: null };
-    this.submitting = submitting;
-    let dispatched: Dispatched<ConversationRejection, EventChange>;
-    try {
-      dispatched = this.dispatch({
-        kind: "submit_task",
-        origin: this.origin,
-        text: payload.text,
-        clientId: ctx.clientId,
-        commandId: ctx.commandId,
-        requested: {
-          model: this.deps.profile.runtime.model,
-          effort: this.deps.profile.runtime.effort,
-        },
-        ids: {
-          task: this.deps.newId("task"),
-          execution: this.deps.newId("exec"),
-          submitted: this.deps.newId("evt"),
-          started: this.deps.newId("evt"),
-        },
-      });
-    } finally {
-      this.submitting = previous;
-    }
-    if (dispatched.kind === "rejected") {
-      const { taskId, status, pendingApprovals } = expectRejection(dispatched.rejection, ["busy"]);
-      const hint =
-        pendingApprovals.length > 0
-          ? `approve or reject ${pendingApprovals.join(", ")}, or interrupt it`
-          : "wait for it to finish or interrupt it";
-      return fail("busy", `task ${taskId} is ${status}; ${hint}`);
-    }
-    if (dispatched.kind === "failed")
-      return fail("record_failure", `could not record task: ${errorMessage(dispatched.error)}`);
-    // Unreachable: a committed submission's transition always queues its turn, and taking it cannot fail.
-    if (!submitting.turn) throw new Error("a task submission committed without its turn");
-    return this.startTurn(this.activeConversation, submitting.turn);
-  }
-
-  /**
-   * Start the runtime on the turn of the task a submission has committed, with the prompt the submission composed,
-   * from the conversation as that commit left it. An adapter that throws here fails the command; the task it recorded
-   * stays the active one, with no runtime to end it.
-   */
-  private startTurn(conversation: ConversationState, turn: TurnStart): CommandResult {
-    const { taskId, prompt } = turn;
-    const task = conversation.task;
-    // Unreachable: the submission that queued this turn made its task the conversation's.
-    if (task?.id !== taskId) throw new Error(`task ${taskId} is not the conversation's task`);
-    const finished: PromiseWithResolvers<void> = Promise.withResolvers();
-    const handle = this.deps.adapter.submitTurn({
-      text: prompt,
+    if (!conversation || conversation.workerPrompt === null)
+      throw new Error("a session opens only for a started conversation with a worker prompt");
+    const handle = this.deps.sessions.open({
       runtimeConversationId: conversation.runtimeConversationId,
-      firstTurn: !conversation.sessionStarted,
-      // The launch creates this directory and the conversation directory above it, owner-only, on the first turn.
-      runtimeDir: resolve(conversation.directory, "runtime"),
-      turnIndex: conversation.turnCount,
-      agentPromptFile: conversation.promptFile,
-      permissionHandler: (req) => this.handlePermission(taskId, req),
-      onEvent: (event) => this.onRuntimeEvent(taskId, event),
+      resume: start.resume,
+      runtimeDir: join(conversation.directory, "runtime"),
+      sessionIndex: start.sessionIndex,
+      managerPromptFile: conversation.managerPromptFile,
+      workerPrompt: conversation.workerPrompt,
+      decide: this.decide,
+      onEvent: async (event) => this.onSessionEvent(machine, event),
     });
-    this.running = { taskId, handle, finished: finished.promise };
-    void handle.result
-      .then((result) => this.finishTurn(taskId, result))
-      .catch((error) =>
-        this.deps.log(
-          `finishTurn failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
-        ),
-      )
-      .finally(() => {
-        // However finishTurn ended, even by throwing: the runtime has ended, so a prompt it never abandoned is
-        // answered with a denial rather than left holding a place under MAX_HELD_PROMPTS. One already answered is
-        // skipped.
-        try {
-          const ended = this.taskOf(taskId);
-          for (const call of ended ? callsOf(ended) : []) this.answerPrompt(call, TURN_ENDED);
-          // The task's end was recorded (or failed to be) by finishTurn.
-          if (ended) this.dispatchMemoryOnly({ kind: "task_cleared", taskId });
-        } catch (error) {
-          // Not expected, as nothing here touches the catalog; caught so the turn still settles below, and so this
-          // chain, which nothing awaits, cannot reject.
-          this.deps.log(`could not clear task ${taskId}: ${errorMessage(error)}`);
-        }
-        if (this.running?.taskId === taskId) this.running = null;
-        finished.resolve();
-      });
-    return {
-      ok: true,
-      result: { task_id: taskId, execution_id: task.executionId, execution_epoch: task.epoch },
-    };
-  }
-
-  approvalDecision(
-    ctx: CommandContext,
-    payload: { conversation_id: string; task_id: string; approval_id: string; decision: Decision },
-  ): CommandResult {
-    const addressed = this.addressTask(ctx, payload);
-    if (addressed.kind === "rejected") return addressed.result;
-    if (addressed.kind === "no_active_task") {
-      const known = this.deps.catalog.get<{ status: ApprovalStatus; task_id: string }>(
-        "SELECT a.status, t.task_id FROM approvals a JOIN tool_calls t ON t.id = a.tool_call_id WHERE a.id = ?",
-        payload.approval_id,
-      );
-      if (known && known.task_id === payload.task_id)
-        return fail(
-          "invalid_state",
-          `approval ${payload.approval_id} is ${known.status} and task ${payload.task_id} is no longer active; a decision cannot be reused`,
-        );
-      return addressed.result;
-    }
-    const { task } = addressed;
-    const approvalId = payload.approval_id;
-    const dispatched = this.dispatch({
-      kind: "approval_decision",
-      origin: this.origin,
-      taskId: task.id,
-      approvalId,
-      decision: payload.decision,
-      deciderClientId: ctx.clientId,
-      ids: { resolved: this.deps.newId("evt"), dispatched: this.deps.newId("evt") },
-    });
-    if (dispatched.kind === "rejected")
-      return match(expectRejection(dispatched.rejection, ["no_task", "not_owner", "not_pending"]))
-        .with({ kind: "no_task" }, () => notActiveTask(payload.task_id))
-        .with({ kind: "not_owner" }, () =>
-          fail("unauthenticated", "decision must come from the client that owns the task"),
-        )
-        .with({ kind: "not_pending" }, () => this.notPending(task, approvalId))
-        .exhaustive();
-    // Record failure: the call stays held and pending; nothing is released.
-    if (dispatched.kind === "failed")
-      return fail(
-        "record_failure",
-        `decision not recorded; call remains held: ${errorMessage(dispatched.error)}`,
-      );
-    return {
-      ok: true,
-      result: {
-        approval_id: approvalId,
-        released: releasedBy(this.activeConversation, approvalId),
-        decision: payload.decision,
-      },
-    };
-  }
-
-  /** Why a decision on `approvalId`, which `task` no longer holds pending, was refused, as the records say. */
-  private notPending(task: TaskState, approvalId: string): CommandResult {
-    const known = this.deps.catalog.get<{ status: ApprovalStatus }>(
-      "SELECT a.status FROM approvals a JOIN tool_calls t ON t.id = a.tool_call_id WHERE a.id = ? AND t.task_id = ?",
-      approvalId,
-      task.id,
-    );
-    // A row still pending here is no longer held in memory, for example because its abandonment could not
-    // be recorded: Mia never released its call and no decision can now.
-    if (known?.status === "pending")
-      return fail(
-        "invalid_state",
-        `approval ${approvalId} can no longer be decided; its call was not released`,
-      );
-    if (known)
-      return fail(
-        "invalid_state",
-        `approval ${approvalId} is ${known.status}, not pending; a decision cannot be reused`,
-      );
-    return fail("not_found", `approval ${approvalId} does not exist for this task`);
-  }
-
-  interruptTask(
-    ctx: CommandContext,
-    payload: { conversation_id: string; task_id: string },
-  ): CommandResult {
-    const addressed = this.addressTask(ctx, payload);
-    if (addressed.kind !== "active") return addressed.result;
-    return this.interrupt(addressed.task);
-  }
-
-  /** The interrupt control: D1 runs at most one task, so it interrupts that one, and with none it has nothing to do. */
-  interruptAll(ctx: CommandContext, payload: { conversation_id: string }): CommandResult {
-    const guard = this.guard(ctx, payload.conversation_id);
-    if (guard) return guard;
-    const task = this.task;
-    return task ? this.interrupt(task) : { ok: true, result: { interrupted: [] } };
-  }
-
-  /**
-   * Interrupt the active task through the recorded path, whoever asked: a client or shutdown. Atomically, the gate
-   * closes, the epoch advances, pending approvals are invalidated and the order is recorded (see
-   * `interruptionTransition`).
-   */
-  private interrupt(task: TaskState): CommandResult {
-    const requested = this.deps.newId("evt");
-    const dispatched = this.dispatch({
-      kind: "interrupt_task",
-      origin: this.origin,
-      taskId: task.id,
-      ids: {
-        requested,
-        resolved: new Map(
-          task.pendingApprovals.keys().map((approvalId) => [approvalId, this.deps.newId("evt")]),
-        ),
-      },
-    });
-    if (dispatched.kind === "rejected")
-      return match(
-        expectRejection(dispatched.rejection, [
-          "no_task",
-          "already_interrupting",
-          "runtime_ended",
-          "invalid",
-        ]),
-      )
-        .with({ kind: "no_task" }, () => notActiveTask(task.id))
-        .with({ kind: "already_interrupting" }, (): CommandResult => ({
-          ok: true,
-          result: { already_interrupting: true },
-        }))
-        .with({ kind: "runtime_ended" }, (): CommandResult => ({
-          ok: true,
-          result: { runtime_ended: true },
-        }))
-        .with({ kind: "invalid" }, ({ taskStatus }) =>
-          fail("invalid_state", `task is ${taskStatus}`),
-        )
-        .exhaustive();
-    if (dispatched.kind === "failed")
-      return fail("record_failure", `interruption not recorded: ${errorMessage(dispatched.error)}`);
-    return { ok: true, result: { execution_epoch: this.activeConversation.epoch } };
-  }
-
-  /**
-   * Records a client's diagnostics snapshot. One about the active conversation is that conversation's transition
-   * (`diagnosticsTransition`); one about no conversation, or another, records its row alone, as a heartbeat does.
-   */
-  diagnosticSnapshot(
-    ctx: CommandContext,
-    payload: { conversation_id: string | null; diagnostics: ClientDiagnostics },
-  ): CommandResult {
-    const about = Boolean(
-      payload.conversation_id && this.conversation?.id === payload.conversation_id,
-    );
-    const ids = { event: this.deps.newId("evt"), diagnostics: this.deps.newId("diag") };
-    try {
-      if (about) {
-        // Never rejected: a report about the conversation is always recorded.
-        this.dispatchUnrefused({
-          kind: "client_diagnostics",
-          origin: this.origin,
-          from: { clientId: ctx.clientId, connectionId: ctx.connectionId },
-          diagnostics: payload.diagnostics,
-          ids,
-        });
-      } else
-        this.deps.writer.recordDiagnostics({
-          id: ids.diagnostics,
-          receivedAt: this.deps.now().toISOString(),
-          conversationId: null,
-          clientId: ctx.clientId,
-          clientConnectionId: ctx.connectionId,
-          taskId: this.task?.id ?? null,
-          eventId: null,
-          capturedAt: payload.diagnostics.captured_at,
-          state: payload.diagnostics,
-        });
-      return { ok: true };
-    } catch (error) {
-      return fail("record_failure", String(error));
-    }
-  }
-
-  /** Disconnection is not consent: pending approvals stay pending; the connection simply stops being active. */
-  onDisconnect(connectionId: string): void {
-    if (this.starting?.connectionId === connectionId) this.starting.disconnected = true;
-    if (this.clients.connectionId !== connectionId) return;
-    if (this.conversation) {
-      try {
-        // Never rejected: a disconnect of the conversation's connection is always recorded.
-        this.dispatchUnrefused({
-          kind: "client_disconnected",
-          origin: this.origin,
-          connectionId,
-          ids: { event: this.deps.newId("evt") },
-        });
-      } catch (error) {
-        this.deps.log(`could not record disconnect: ${String(error)}`);
-      }
-    }
-    this.clients.disconnect(connectionId);
-  }
-
-  /** The preamble every task-scoped command shares: guard the conversation, then address the one active task. */
-  private addressTask(
-    ctx: CommandContext,
-    payload: { conversation_id: string; task_id: string },
-  ): AddressedTask {
-    const guard = this.guard(ctx, payload.conversation_id);
-    if (guard) return { kind: "rejected", result: guard };
-    const task = this.task;
-    if (!task || task.id !== payload.task_id)
-      return {
-        kind: "no_active_task",
-        result: notActiveTask(payload.task_id),
-      };
-    return { kind: "active", task };
-  }
-
-  /**
-   * Answer the prompt held for `call`'s approval, if one is still held. None is when the call never asked, or its
-   * prompt was already answered: abandoned by the runtime, or denied once its turn ended. The
-   * runtime then already has a denial, and this answer is dropped.
-   */
-  private answerPrompt(call: CallState, decision: PermissionDecision): void {
-    if (call.approvalId !== null) this.prompts.reply(call.approvalId, decision);
-  }
-
-  // ---------------------------------------------------------------- runtime events
-
-  /**
-   * Handles one runtime event; it never rejects. A tool result that declares an output file is captured and
-   * stored first, and in debug mode a released call's result first reads its server's body log (see
-   * `readMcpBodies`); both happen outside the transaction, because the reads and the write can take long. Every
-   * other event is recorded before this returns. A released call whose result never arrives has its body log read
-   * at turn end instead (`readUnresultedBodies`).
-   * A failed result never completes its call, so the file it declares is not read.
-   * The adapter hands over the next stdout event only once this settles, so events still commit in the order the
-   * runtime wrote them. The turn ends before the reads and the store only when the adapter stops reading a runtime
-   * whose interruption did not end it; the result is then dropped with a log line, because the turn has already
-   * been recorded without it.
-   */
-  private async onRuntimeEvent(taskId: string, event: RuntimeEvent): Promise<void> {
-    if (event.type === "tool_proposed") {
-      this.recordRuntimeEvent(taskId, {
-        event,
-        policy: policyFor(this.deps.profile.runtime, event.toolIdentity),
-      });
-      return;
-    }
-    if (event.type !== "tool_result") {
-      this.recordRuntimeEvent(taskId, { event });
-      return;
-    }
-    const declared = event.isError ? null : extractDeclaredArtifact(event.content);
-    const task = this.taskOf(taskId);
-    const bodyLog = task ? this.bodyLogOf(task, event.runtimeCallId) : null;
-    if (!declared && bodyLog === null) {
-      this.recordRuntimeEvent(taskId, { event, output: null, bodies: null });
-      return;
-    }
-    const [output, bodies] = await Promise.all([
-      declared ? this.captureOutput(declared) : null,
-      bodyLog === null ? null : this.readMcpBodies(bodyLog, event.runtimeCallId),
-    ]);
-    this.recordRuntimeEvent(taskId, { event, output, bodies });
-  }
-
-  /** Captures and stores a tool output a result declared, with the ids of the rows that will record it. */
-  private async captureOutput(declared: DeclaredArtifact): Promise<CapturedOutput> {
-    const capture = await this.deps
-      .collectArtifact(declared, this.deps.profile.runtime.outputDirectories)
-      .catch((error: unknown): Capture => ({
-        status: "failed",
-        reason: `declared file unreadable: ${errorMessage(error)}`,
-      }));
-    const retention = await this.store(capture, this.stopping.signal);
-    const ids: OutputIds = {
-      artifact: this.deps.newId("art"),
-      resultLink: this.deps.newId("link"),
-      outputLink: this.deps.newId("link"),
-      registered: this.deps.newId("evt"),
-    };
-    return { ids, declared, retention };
-  }
-
-  /**
-   * The body log a tool result reads, or null when it reads none: only in debug mode, only for a call Mia
-   * released (a refused call's error result never reached a server), and only when that call's server writes a
-   * body log, which only the controlled MCP fixture does (issue #6). Debug mode off never reads one, so it records
-   * exactly what it records without body logs.
-   */
-  private bodyLogOf(task: TaskState, runtimeCallId: string): string | null {
-    if (!this.deps.debugMode) return null;
-    const binding = bindToolResult(task.calls.get(runtimeCallId) ?? []);
-    if (binding.kind === "unmatched" || !isReleased(binding.call.status)) return null;
-    return bodyLogFor(this.deps.profile.runtime, binding.call.toolIdentity);
-  }
-
-  /** Reads what a call's body log holds for it, before the transaction that records it (see `readBodyLog`). */
-  private async readMcpBodies(path: string, runtimeCallId: string): Promise<McpBodyRecord[]> {
-    return this.bodiesFrom(await this.readBodyLog(path), runtimeCallId, "tool_result");
-  }
-
-  /**
-   * In debug mode, what turn end records for each released call whose tool result never arrived (its turn
-   * interrupted, or its runtime gone mid-call; see `releasedWithoutResult`) and whose server writes a body log: the
-   * bodies that log holds for it, read before the transaction as its result would have read them. Each log is
-   * read once, however many such calls it serves. The read is a snapshot: the server may still be handling a call
-   * the runtime gave up on, so a line missing from it is recorded as not written yet (`BodyReadPoint`).
-   */
-  private async readUnresultedBodies(task: TaskState): Promise<UnresultedBodies[]> {
-    if (!this.deps.debugMode) return [];
-    const calls = releasedWithoutResult(task.calls.values()).flatMap((call) => {
-      const path = bodyLogFor(this.deps.profile.runtime, call.toolIdentity);
-      return path === null ? [] : [{ call, path }];
-    });
-    const byLog = await Promise.all(
-      Map.groupBy(calls, ({ path }) => path)
-        .entries()
-        .map(async ([path, group]) => {
-          const read = await this.readBodyLog(path);
-          return group.map(({ call }) => ({
-            call,
-            bodies: this.bodiesFrom(read, call.runtimeCallId, "turn_end"),
-          }));
+    const open: OpenSession = {
+      handle,
+      machine,
+      ended: handle.result
+        .then((result) => this.recordSessionEnd(machine, result))
+        .catch((error: unknown) => this.deps.log(`session end failed: ${errorMessage(error)}`))
+        .finally(() => {
+          if (this.session === open) this.session = null;
         }),
-    );
-    return byLog.flat();
+    };
+    this.session = open;
   }
 
   /**
-   * Reads a body log, bounded like a turn-end evidence read (`readEvidence`, capped at `MAX_BODY_LOG_BYTES`,
-   * abandoned at its deadline or shutdown). It never rejects: a log that cannot be read is recorded as the reason
-   * its bodies are missing.
+   * Record the session's end: its transcript and hook evidence read and stored first, and in debug mode the bodies of
+   * calls whose result never arrived. If the end cannot be recorded, memory lets the session go anyway
+   * (`session_lost`), so the conversation does not keep writing to a dead runtime.
    */
-  private readBodyLog(path: string): Promise<RuntimeFileRead> {
+  private async recordSessionEnd(
+    machine: ConversationMachine,
+    result: SessionResult,
+  ): Promise<void> {
     const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
-    return this.deps.readEvidence(path, { signal, maxBytes: MAX_BODY_LOG_BYTES });
+    const [transcript, hookRead, unresultedBodies] = await Promise.all([
+      this.deps.readEvidence(result.streamLogPath, { signal }),
+      this.deps.readEvidence(result.hookEvidencePath, { signal }),
+      this.readUnresultedBodies(machine.state),
+    ]);
+    const hookEvidence = hookEvidenceFrom(hookRead);
+    const [transcriptFile, hooksFile] = await Promise.all([
+      this.retainFile(transcript, {
+        name: "session.stream.jsonl",
+        path: result.streamLogPath,
+        signal,
+      }),
+      this.retainFile(hookRead, {
+        name: "session.hooks.jsonl",
+        path: result.hookEvidencePath,
+        signal,
+      }),
+    ]);
+    const dispatched = this.report(machine, {
+      kind: "session_ended",
+      ...this.drawn(),
+      status: result.status,
+      error: result.error,
+      runtimeCancellation: result.cancellation,
+      transcript: transcriptFile,
+      hooks: { file: hooksFile, evidence: hookEvidence },
+      unresultedBodies,
+    });
+    if (dispatched?.kind !== "committed" && machine.state?.session) {
+      this.deps.log("the session's end could not be recorded; letting it go");
+      this.report(machine, { kind: "session_lost" });
+    }
   }
 
-  /** The bodies a body log `read` holds for one call, each with the id of the event that will record it. */
-  private bodiesFrom(
+  /** What a session's file retains: the stored bytes or why not; null when the runtime never wrote it. */
+  private async retainFile(
     read: RuntimeFileRead,
-    runtimeCallId: string,
-    readAt: BodyReadPoint,
-  ): McpBodyRecord[] {
-    // Parsing and redacting can throw (a body nested past the stack), and this must not reject the result's event.
-    const bodies = ((): McpBody[] => {
-      try {
-        return mcpBodiesFrom(read, runtimeCallId, readAt);
-      } catch (error) {
-        return unrecordedBodies(`the body log could not be parsed: ${errorMessage(error)}`);
-      }
-    })();
-    return bodies.map((body) => ({ ...body, eventId: this.deps.newId("evt") }));
+    file: { name: string; path: string; signal: AbortSignal },
+  ): Promise<SessionFile | null> {
+    if (read.status === "absent") return null;
+    const capture: Capture =
+      read.status === "read"
+        ? { status: "retained", bytes: read.bytes }
+        : { status: "failed", reason: `unreadable: ${read.reason}` };
+    return {
+      name: file.name,
+      originalPath: file.path,
+      retention: await this.store(capture, file.signal),
+    };
   }
 
   /**
-   * Stores a retained capture's bytes, before the transaction that registers them opens. Retaining is best-effort,
-   * so bytes that cannot be stored before `signal` aborts become a failed capture that says why. Bytes whose
-   * transaction then fails, or that it does not register (an event dropped because its runtime ended, a result
-   * that completes no call), are left as an unreferenced object, never a row that points at unwritten bytes.
+   * Stores a retained capture's bytes before the transaction that registers them: best-effort, so bytes that cannot be
+   * stored become a failed capture that says why; bytes whose transaction then fails stay an unreferenced object.
    */
   private async store(capture: Capture, signal: AbortSignal): Promise<Retention> {
     if (capture.status !== "retained") return capture;
@@ -1033,358 +413,624 @@ export class Engine extends ConversationEngine<
     );
   }
 
-  /**
-   * Records one runtime event of task `taskId`, with what the boundary read for it, against the task as it is now
-   * (see `runtimeEventTransition`). An event decided after the task's runtime ended is dropped with a log line: the
-   * turn was recorded without it. It never throws: an event that cannot be recorded is logged.
-   */
-  private recordRuntimeEvent(taskId: string, report: RuntimeReport): void {
-    const { event } = report;
+  /** In debug mode, the body log a released call of a server that writes one reads; null when it reads none. */
+  private bodyLogOf(toolIdentity: string): string | null {
+    return this.deps.debugMode ? bodyLogFor(this.deps.profile.runtime, toolIdentity) : null;
+  }
+
+  private async readBodies(
+    path: string,
+    runtimeCallId: string,
+    readAt: BodyReadPoint,
+  ): Promise<McpBody[]> {
+    const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
+    const read = await this.deps.readEvidence(path, { signal, maxBytes: MAX_BODY_LOG_BYTES });
     try {
-      const dispatched = this.dispatch({
-        kind: "runtime_event",
-        origin: this.origin,
-        taskId,
-        report,
-        ids: {
-          event: this.deps.newId("evt"),
-          resolved: this.deps.newId("evt"),
-          call: this.deps.newId("call"),
-          unmatched: this.deps.newId("evt"),
-        },
-      });
-      if (dispatched.kind === "rejected") {
-        const output = "output" in report ? report.output : null;
-        const captured = output ? ` (output ${output.declared.path} captured)` : "";
-        this.deps.log(
-          `${event.type}${captured} for task ${taskId} handled after its runtime ended; not recorded`,
-        );
-        return;
-      }
-      if (dispatched.kind === "failed")
-        this.deps.log(`failed to record ${event.type}: ${errorMessage(dispatched.error)}`);
+      return mcpBodiesFrom(read, runtimeCallId, readAt);
     } catch (error) {
-      this.deps.log(`failed to record ${event.type}: ${errorMessage(error)}`);
+      return unrecordedBodies(`the body log could not be parsed: ${errorMessage(error)}`);
     }
   }
 
-  // ---------------------------------------------------------------- approval controller
-
-  /**
-   * Answers one permission request of task `taskId` (see `permissionRequestTransition`). A refused request is answered
-   * whether or not its refusal can be recorded; any other is answered only once its records commit, and denied at once
-   * when they do not, so nothing is held or released for a request that was never recorded.
-   */
-  private async handlePermission(
-    taskId: string,
-    req: PermissionRequest,
-  ): Promise<PermissionDecision> {
-    let answer: Promise<PermissionDecision>;
-    try {
-      answer = this.decidePermission(taskId, req);
-    } catch (error) {
-      // A transition that threw is a bug: nothing is released, and the runtime is denied at once.
-      this.deps.log(`permission handling failed: ${errorMessage(error)}`);
-      return NOT_RECORDED;
-    }
-    return answer;
+  /** In debug mode, the bodies each released call without a result has in its server's body log, at session end. */
+  private async readUnresultedBodies(
+    state: ConversationState | null,
+  ): Promise<ReadonlyMap<string, readonly McpBody[]>> {
+    if (!state) return new Map();
+    const calls = [...state.tasks.values()].flatMap((task) =>
+      [...task.calls.values()].flatMap((call) => {
+        const path = call.status === "dispatched" ? this.bodyLogOf(call.toolIdentity) : null;
+        return path === null ? [] : [{ runtimeCallId: call.runtimeCallId, path }];
+      }),
+    );
+    const read = await Promise.all(
+      calls.map(async ({ runtimeCallId, path }): Promise<[string, McpBody[]]> => [
+        runtimeCallId,
+        await this.readBodies(path, runtimeCallId, "session_end"),
+      ]),
+    );
+    return new Map(read);
   }
 
+  /** Captures and stores a tool output a result declared. */
+  private async captureOutput(declared: DeclaredArtifact): Promise<CapturedOutput> {
+    const capture = await this.deps
+      .collectArtifact(declared, this.deps.profile.runtime.outputDirectories)
+      .catch((error: unknown): Capture => ({
+        status: "failed",
+        reason: `declared file unreadable: ${errorMessage(error)}`,
+      }));
+    return { declared, retention: await this.store(capture, this.stopping.signal) };
+  }
+
+  /** One report of a session, dispatched into the machine of the conversation that opened it. */
+  private async onSessionEvent(machine: ConversationMachine, event: SessionEvent): Promise<void> {
+    const { runtime } = this.deps.profile;
+    const drawn = this.drawn();
+    await match(event)
+      .with({ type: "runtime_init" }, ({ init }) => {
+        this.report(machine, { ...drawn, kind: "turn_began", init });
+      })
+      .with({ type: "input_taken" }, ({ runtimeMessageId }) => {
+        this.report(machine, { ...drawn, kind: "input_taken", runtimeMessageId });
+      })
+      .with({ type: "text_delta" }, ({ text, parentCallId }) => {
+        // A worker agent's own text is its task's working, not the reply.
+        if (parentCallId === null) this.report(machine, { ...drawn, kind: "reply_text", text });
+      })
+      .with({ type: "turn_result" }, ({ summary }) => {
+        this.report(machine, { ...drawn, kind: "turn_ended", summary });
+      })
+      .with({ type: "tool_result" }, async (result) => {
+        const call = this.releasedCall(machine.state, result.runtimeCallId);
+        const declared = call && !result.isError ? extractDeclaredArtifact(result.content) : null;
+        const bodyLog = call ? this.bodyLogOf(call.toolIdentity) : null;
+        const [output, bodies] = await Promise.all([
+          declared ? this.captureOutput(declared) : null,
+          bodyLog === null ? null : this.readBodies(bodyLog, result.runtimeCallId, "tool_result"),
+        ]);
+        this.report(machine, {
+          ...drawn,
+          kind: "tool_result",
+          runtimeCallId: result.runtimeCallId,
+          parentCallId: result.parentCallId,
+          isError: result.isError,
+          content: result.content,
+          output,
+          bodies,
+        });
+      })
+      .with({ type: "worker_started" }, (started) => {
+        this.report(machine, {
+          ...drawn,
+          kind: "worker_started",
+          runtimeTaskId: started.runtimeTaskId,
+          delegationCallId: started.delegationCallId,
+          description: started.description,
+          clientId: this.clients.clientId,
+          requested: { model: runtime.model, effort: runtime.effort },
+        });
+        for (const wake of this.attributionWaits.get(started.runtimeTaskId) ?? []) wake();
+        this.attributionWaits.delete(started.runtimeTaskId);
+      })
+      .with({ type: "worker_ended" }, (ended) => {
+        this.report(machine, {
+          ...drawn,
+          kind: "worker_ended",
+          runtimeTaskId: ended.runtimeTaskId,
+          status: ended.status,
+          summary: ended.summary,
+        });
+      })
+      .with({ type: "runtime_stderr" }, ({ text }) => this.deps.log(`runtime: ${text.trim()}`))
+      .with({ type: "malformed_event" }, ({ error }) =>
+        this.deps.log(`malformed runtime output: ${error}`),
+      )
+      .with(
+        { type: "runtime_started" },
+        { type: "tool_proposed" },
+        { type: "assistant_message" },
+        { type: "runtime_exit" },
+        () => undefined,
+      )
+      .exhaustive();
+  }
+
+  /** The released call a result names, among running tasks and the unsettled calls of ended ones. */
+  private releasedCall(
+    state: ConversationState | null,
+    runtimeCallId: string,
+  ): { toolIdentity: string } | null {
+    if (!state) return null;
+    for (const task of state.tasks.values())
+      for (const call of task.calls.values())
+        if (call.runtimeCallId === runtimeCallId && call.status === "dispatched") return call;
+    return state.unsettledCalls.get(runtimeCallId) ?? null;
+  }
+
+  // ---------------------------------------------------------------- the gate
+
   /**
-   * Dispatch one permission request, returning what answers the runtime: the answer its committed transition gave
-   * through `answer_permission` (taken through `asking`), the one a rejection carries, or a denial when its records did
-   * not commit. It throws only when the request's transition does.
+   * Decide one call the runtime is about to make, from the manager agent or a worker agent. A worker agent's call that
+   * races the report of its start waits for it, bounded. The answer comes from the committed transition's
+   * `answer_gate` effect; a request whose records did not commit is denied.
    */
-  private decidePermission(taskId: string, req: PermissionRequest): Promise<PermissionDecision> {
-    // Restored, not cleared, so a dispatch nested inside this one's effects could not take the outer request's slot.
+  private async decideGate(request: GateRequest): Promise<GateDecision> {
+    const machine = this.session?.machine;
+    if (!machine || this.shuttingDown) return NO_CONVERSATION;
+    if (request.agentId !== null) await this.awaitAttribution(machine, request.agentId);
+    const { runtime } = this.deps.profile;
+    const asking: Asking = { abandoned: request.abandoned, answer: null };
     const previous = this.asking;
-    const asking: Asking = {
-      taskId,
-      abandoned: req.abandoned,
-      dispatching: true,
-      answer: null,
-      expireAfter: null,
-    };
     this.asking = asking;
     let dispatched: Dispatched<ConversationRejection, EventChange>;
     try {
-      dispatched = this.dispatch({
-        kind: "permission_request",
-        origin: this.origin,
-        taskId,
-        request: {
-          runtimeCallId: req.toolUseId ?? null,
-          toolIdentity: req.toolName,
-          input: req.input,
-        },
-        policy: policyFor(this.deps.profile.runtime, req.toolName),
-        promptsFull: this.prompts.full,
-        ids: {
-          resolved: this.deps.newId("evt"),
-          proposal: this.deps.newId("evt"),
-          call: this.deps.newId("call"),
-          evaluation: this.deps.newId("evt"),
-          outcome: this.deps.newId("evt"),
-          approval: this.deps.newId("appr"),
-        },
+      dispatched = machine.dispatch({
+        kind: "gate_request",
+        ...this.drawn(),
+        runtimeCallId: request.toolUseId,
+        toolIdentity: request.toolName,
+        input: request.input,
+        agentId: request.agentId,
+        managerCall: readManagerCall(request.toolName, request.input),
+        policy: policyFor(runtime, request.toolName),
+        exclusive: runtime.exclusiveTools.includes(request.toolName),
+        heldFull: this.held.full,
       });
+    } catch (error) {
+      this.deps.log(`gate request failed: ${errorMessage(error)}`);
+      return NOT_RECORDED;
     } finally {
-      asking.dispatching = false;
       this.asking = previous;
     }
-    if (dispatched.kind === "rejected")
-      return match(expectRejection(dispatched.rejection, ["no_task", "refused"]))
-        .with({ kind: "no_task" }, () => Promise.resolve(NO_ACTIVE_TASK))
-        .with({ kind: "refused" }, ({ detail, answer }) => {
-          this.recordRefusal(taskId, detail);
-          return Promise.resolve(answer);
-        })
-        .exhaustive();
     if (dispatched.kind === "failed") {
-      // Nothing was requested, so nothing is held: the runtime is denied at once.
-      this.deps.log(`permission handling failed: ${errorMessage(dispatched.error)}`);
-      return Promise.resolve(NOT_RECORDED);
+      this.deps.log(`gate request not recorded: ${errorMessage(dispatched.error)}`);
+      return NOT_RECORDED;
     }
-    // The deferred expiry (see `abandon`), after the request's own events, so its approval_resolved follows its
-    // approval_requested. The runtime already has its denial, which a transition that throws here does not change.
-    if (asking.expireAfter !== null) {
-      try {
-        this.expireAbandoned(taskId, asking.expireAfter);
-      } catch (error) {
-        this.deps.log(`could not expire abandoned approval: ${errorMessage(error)}`);
-      }
-    }
-    if (asking.answer) return asking.answer;
-    // Unreachable: a committed request's transition always queues its answer, and taking it cannot fail. The request
-    // was recorded, so this denial does not claim otherwise.
-    this.deps.log(`permission request for ${req.toolName} was recorded but not answered`);
-    return Promise.resolve(UNANSWERED);
+    if (dispatched.kind === "rejected") return NO_CONVERSATION;
+    return asking.answer ?? NOT_RECORDED;
   }
 
-  /** Take a committed permission request's answer as its `answer_permission` effect is performed (see `EngineEffect`). */
-  private takeAnswer(asking: Asking, answer: PermissionAnswer): Promise<PermissionDecision> {
+  /** Wait until the runtime has reported worker agent `agentId`'s start, or the attribution deadline passes. */
+  private async awaitAttribution(machine: ConversationMachine, agentId: string): Promise<void> {
+    const known = () =>
+      [...(machine.state?.tasks.values() ?? [])].some((task) => task.runtimeTaskId === agentId);
+    if (known()) return;
+    const waiting = [...this.attributionWaits.values()].reduce((sum, list) => sum + list.length, 0);
+    if (waiting >= MAX_ATTRIBUTION_WAITS) return;
+    const started = Promise.withResolvers<undefined>();
+    const wake = () => started.resolve(undefined);
+    this.attributionWaits.set(agentId, [...(this.attributionWaits.get(agentId) ?? []), wake]);
+    await untilAborted(
+      () => started.promise,
+      this.deps.attributionDeadline(),
+      () => undefined,
+    );
+    // A wait the deadline ended leaves the list; one the start woke has already left it.
+    const remaining = (this.attributionWaits.get(agentId) ?? []).filter((other) => other !== wake);
+    if (remaining.length > 0) this.attributionWaits.set(agentId, remaining);
+    else this.attributionWaits.delete(agentId);
+  }
+
+  private takeAnswer(asking: Asking, answer: GateAnswer): Promise<GateDecision> {
     return match(answer)
       .with({ kind: "answer" }, ({ decision }) => Promise.resolve(decision))
-      .with({ kind: "hold" }, ({ approvalId, callId }) =>
-        this.holdPrompt(asking, { approvalId, callId }),
+      .with({ kind: "hold" }, ({ approvalId }) => {
+        const machine = this.session?.machine;
+        const held = this.held.hold(approvalId, {
+          signal: asking.abandoned,
+          onAbort: () => {
+            // Recorded once the dispatch that held it has returned, if it aborted that early.
+            if (machine)
+              queueMicrotask(() =>
+                this.report(machine, { kind: "approval_abandoned", ...this.drawn(), approvalId }),
+              );
+            return ABANDONED;
+          },
+        });
+        if (held.kind === "held") return held.reply;
+        this.deps.log(`call for approval ${approvalId} could not be held (${held.refusal})`);
+        return Promise.resolve(ABANDONED);
+      })
+      .exhaustive();
+  }
+
+  // ---------------------------------------------------------------- commands
+
+  /** Attach the function that delivers events to connections (see `ClientOwnership.attach`). */
+  attachDelivery(delivery: Delivery): () => void {
+    return this.clients.attach(delivery);
+  }
+
+  /** A reconnecting client (same client id) may resume ownership when no other connection is active. */
+  adoptConnection(connectionId: string, clientId: string): boolean {
+    return this.clients.adopt(connectionId, clientId);
+  }
+
+  /** Disconnection is not consent: pending approvals stay pending, and tasks keep running. */
+  onDisconnect(connectionId: string): void {
+    if (!this.clients.disconnect(connectionId) || !this.machine) return;
+    this.report(this.machine, { kind: "client_disconnected", ...this.drawn(), connectionId });
+  }
+
+  /** Run one validated client command; once shutdown has begun, every command is refused unrun. */
+  async handle(ctx: CommandContext, command: ClientCommand): Promise<CommandResult> {
+    if (this.shuttingDown) return fail("invalid_state", "the server is shutting down");
+    return match(command)
+      .with({ type: "start_conversation" }, () => this.startConversation(ctx))
+      .with({ type: "submit_text" }, ({ payload }) => this.submitText(ctx, payload))
+      .with({ type: "approval_decision" }, ({ payload }) => this.approvalDecision(ctx, payload))
+      .with({ type: "interrupt_task" }, ({ payload }) => this.interruptTask(ctx, payload))
+      .with({ type: "interrupt_all" }, ({ payload }) => this.interruptAll(ctx, payload))
+      .with({ type: "diagnostic_snapshot" }, ({ payload }) => this.diagnosticSnapshot(ctx, payload))
+      .with({ type: "heartbeat" }, ({ payload }) => this.heartbeat(ctx, payload))
+      .exhaustive();
+  }
+
+  private guard(ctx: CommandContext, conversationId: string): CommandResult | null {
+    const conversation = this.conversation;
+    if (!conversation)
+      return fail("invalid_state", "no conversation; send start_conversation first");
+    if (conversation.id !== conversationId)
+      return fail("not_found", `conversation ${conversationId} is not active`);
+    const refusal = this.clients.refusal(ctx.connectionId, ctx.clientId);
+    return refusal === null ? null : fail("busy", refusal);
+  }
+
+  /** The machine of the guarded conversation; `guard` returned null, so there is one. */
+  private get active(): ConversationMachine {
+    if (!this.machine) throw new Error("engine has no active conversation");
+    return this.machine;
+  }
+
+  /** Why the conversation cannot be replaced now, or null: work still running, or another client owning it. */
+  private refuseStart(ctx: CommandContext): CommandResult | null {
+    const state = this.conversation;
+    if (state && (state.tasks.size > 0 || state.turn !== null || state.queuedInputs.length > 0))
+      return fail("busy", "work is running; stop it before starting a new conversation");
+    if (state && this.clients.connectionId && this.clients.connectionId !== ctx.connectionId)
+      return fail("busy", "another client owns the active conversation");
+    return null;
+  }
+
+  /**
+   * Starts a conversation: reads its files and stores its provenance before the transaction, then commits the start
+   * in a machine of its own. An idle session of the conversation it replaces is closed: it ends once it has finished
+   * what it has, recorded into its own conversation.
+   */
+  private async startConversation(ctx: CommandContext): Promise<CommandResult> {
+    const refused = this.refuseStart(ctx);
+    if (refused) return refused;
+    if (this.starting) return fail("busy", "another conversation is starting");
+    this.starting = true;
+    try {
+      const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
+      const { profile, readEvidence, identity, writer } = this.deps;
+      const { objects } = writer;
+      let provenance;
+      let workerPrompt: string | null = null;
+      try {
+        provenance = nameProvenance(
+          await prepareConversationProvenance({
+            profile,
+            read: readEvidence,
+            identity,
+            clientBuild: ctx.clientBuild,
+            objects,
+            signal,
+          }),
+          this.deps.newId,
+        );
+        const worker = workerPromptObject(provenance);
+        // The retained object's own bytes, so the prompt the runtime gets is the one the provenance holds.
+        if (worker !== null) {
+          const read = await objects.readVerified(worker.digest, {
+            expectedBytes: worker.byteCount,
+            maxBytes: MAX_CONVERSATION_FILE_BYTES,
+            signal,
+          });
+          if (read.status !== "verified")
+            return fail("record_failure", `the retained worker prompt is ${read.status}`);
+          workerPrompt = read.bytes.toString("utf8");
+        }
+      } catch (error) {
+        return fail("record_failure", `could not create conversation: ${errorMessage(error)}`);
+      }
+      const again = this.shuttingDown
+        ? fail("invalid_state", "the server is shutting down")
+        : this.refuseStart(ctx);
+      if (again) return again;
+      const manager = agentPromptObject(provenance);
+      const conversationId = this.deps.newId("conv");
+      const machine = this.openConversation(conversationId);
+      const dispatched = machine.dispatch({
+        kind: "start_conversation",
+        origin: { clientId: ctx.clientId, connectionId: ctx.connectionId },
+        closes: this.conversation?.id ?? null,
+        provenance,
+        managerPromptFile: manager === null ? null : objects.pathFor(manager.digest),
+        workerPrompt,
+        conversationsRoot: this.deps.catalog.paths.conversations,
+        debugMode: this.deps.debugMode,
+        ids: {
+          conversation: conversationId,
+          runtimeConversation: this.deps.newRuntimeMessageId(),
+          provenanceRecorded: this.deps.newId("evt"),
+          started: this.deps.newId("evt"),
+          captured: this.deps.newId("evt"),
+        },
+      });
+      if (dispatched.kind !== "committed")
+        return fail(
+          "record_failure",
+          dispatched.kind === "failed"
+            ? `could not create conversation: ${errorMessage(dispatched.error)}`
+            : `start refused: ${dispatched.rejection.kind}`,
+        );
+      this.session?.handle.close();
+      const conversation = machine.state;
+      if (!conversation) throw new Error("a conversation start committed without its conversation");
+      return {
+        ok: true,
+        result: {
+          conversation_id: conversation.id,
+          provenance_set_id: conversation.provenanceSetId,
+        },
+      };
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  /** A message for the manager agent: accepted while work runs, and read as a coming turn's input. */
+  private submitText(
+    ctx: CommandContext,
+    payload: { conversation_id: string; text: string },
+    fromMia = false,
+  ): CommandResult {
+    const guard = this.guard(ctx, payload.conversation_id);
+    if (guard) return guard;
+    const { runtime } = this.deps.profile;
+    const dispatched = this.active.dispatch({
+      kind: "message_submitted",
+      ...this.drawn(),
+      text: payload.text,
+      clientId: ctx.clientId,
+      requested: { model: runtime.model, effort: runtime.effort },
+      fromMia,
+      runtimeMessageId: this.deps.newRuntimeMessageId(),
+    });
+    return match(dispatched)
+      .with({ kind: "committed" }, (): CommandResult => ({
+        ok: true,
+        result: { queued: this.conversation?.queuedInputs.length ?? 0 },
+      }))
+      .with({ kind: "failed" }, ({ error }) =>
+        fail("record_failure", `could not record the message: ${errorMessage(error)}`),
+      )
+      .with({ kind: "rejected" }, ({ rejection }) =>
+        match(rejection)
+          .with({ kind: "busy" }, ({ queued }) =>
+            fail("busy", `${queued} messages are already waiting for the manager agent`),
+          )
+          .with({ kind: "stopping" }, () =>
+            fail("invalid_state", "every task is being stopped; send the message once they have"),
+          )
+          .with({ kind: "no_worker_prompt" }, () =>
+            fail(
+              "configuration_error",
+              "the worker prompt was missing when the conversation started",
+            ),
+          )
+          .otherwise(({ kind }) => fail("internal", `message refused: ${kind}`)),
+      )
+      .exhaustive();
+  }
+
+  private approvalDecision(
+    ctx: CommandContext,
+    payload: { conversation_id: string; task_id: string; approval_id: string; decision: Decision },
+  ): CommandResult {
+    const guard = this.guard(ctx, payload.conversation_id);
+    if (guard) return guard;
+    const task = this.conversation?.tasks.get(payload.task_id);
+    const callId = task?.pendingApprovals.get(payload.approval_id);
+    const call = callId === undefined ? undefined : task?.calls.get(callId);
+    const dispatched = this.active.dispatch({
+      kind: "approval_decision",
+      ...this.drawn(),
+      taskId: payload.task_id,
+      approvalId: payload.approval_id,
+      decision: payload.decision,
+      deciderClientId: ctx.clientId,
+      ownerClientId: this.clients.clientId,
+      exclusive:
+        call !== undefined && this.deps.profile.runtime.exclusiveTools.includes(call.toolIdentity),
+    });
+    return match(dispatched)
+      .with({ kind: "committed" }, (): CommandResult => {
+        const status =
+          callId === undefined
+            ? undefined
+            : this.conversation?.tasks.get(payload.task_id)?.calls.get(callId)?.status;
+        return {
+          ok: true,
+          result: {
+            approval_id: payload.approval_id,
+            decision: payload.decision,
+            released: status === "dispatched" || status === "completed" || status === "failed",
+          },
+        };
+      })
+      .with({ kind: "failed" }, ({ error }) =>
+        fail("record_failure", `decision not recorded; call remains held: ${errorMessage(error)}`),
+      )
+      .with({ kind: "rejected" }, ({ rejection }) =>
+        match(rejection)
+          .with({ kind: "no_task" }, () =>
+            fail("not_found", `task ${payload.task_id} is not running`),
+          )
+          .with({ kind: "not_owner" }, () =>
+            fail(
+              "unauthenticated",
+              "decision must come from the client that owns the conversation",
+            ),
+          )
+          .with({ kind: "not_pending" }, () =>
+            fail("invalid_state", `approval ${payload.approval_id} is not pending`),
+          )
+          .otherwise(({ kind }) => fail("internal", `decision refused: ${kind}`)),
       )
       .exhaustive();
   }
 
   /**
-   * Hold the runtime's prompt for a call whose approval request has committed, until the user decides or the
-   * runtime abandons it. Held only after the commit, so a request that could not be recorded is never held. A
-   * prompt the runtime abandoned before this (a signal already aborted) is abandoned at once (see `abandon`). The cap
-   * was checked before the request was recorded (`promptsFull`), and nothing ran since. That check counts a prompt the
-   * request supersedes as still held, though the request's effects answer it only after this hold, so a request at
-   * the cap never asks, and a refusal here is a bug; its approval is expired as abandoned, so no decision can release
-   * a call whose runtime was denied.
+   * The person stops one task: its gate closes at once, then Mia asks the manager agent, in a message of its own, to
+   * stop the worker agent. The closed gate holds whether or not the manager agent does; the reply says whether it was
+   * asked.
    */
-  private holdPrompt(
-    asking: Asking,
-    hold: { approvalId: string; callId: string },
-  ): Promise<PermissionDecision> {
-    const { approvalId, callId } = hold;
-    const held = this.prompts.hold(approvalId, {
-      signal: asking.abandoned,
-      onAbort: () => this.abandon(asking, callId),
+  private interruptTask(
+    ctx: CommandContext,
+    payload: { conversation_id: string; task_id: string },
+  ): CommandResult {
+    const guard = this.guard(ctx, payload.conversation_id);
+    if (guard) return guard;
+    const task = this.conversation?.tasks.get(payload.task_id);
+    const dispatched = this.active.dispatch({
+      kind: "stop_task",
+      ...this.drawn(),
+      taskId: payload.task_id,
     });
-    return match(held)
-      .with({ kind: "held" }, ({ reply }) => reply)
-      .with({ kind: "refused" }, ({ refusal }) => {
-        this.deps.log(`prompt for approval ${approvalId} could not be held (${refusal})`);
-        return Promise.resolve(this.abandon(asking, callId));
-      })
+    if (dispatched.kind === "rejected")
+      return dispatched.rejection.kind === "already_stopping"
+        ? { ok: true, result: { already_stopping: true } }
+        : fail("not_found", `task ${payload.task_id} is not running`);
+    if (dispatched.kind === "failed")
+      return fail("record_failure", `stop not recorded: ${errorMessage(dispatched.error)}`);
+    const asked = task
+      ? this.submitText(
+          ctx,
+          {
+            conversation_id: payload.conversation_id,
+            text: `[Mia] The user stopped the task "${task.id}" (worker agent ${task.runtimeTaskId}). Stop that worker agent now with TaskStop, and do not start it again.`,
+          },
+          true,
+        )
+      : fail("not_found", "the task ended");
+    return {
+      ok: true,
+      result: {
+        task_id: payload.task_id,
+        gate_closed: true,
+        manager_asked: asked.ok,
+        ...(asked.ok ? {} : { manager_not_asked: asked.message }),
+      },
+    };
+  }
+
+  /** The interrupt control: every task stops through the engine, whatever the manager agent does. */
+  private interruptAll(ctx: CommandContext, payload: { conversation_id: string }): CommandResult {
+    const guard = this.guard(ctx, payload.conversation_id);
+    if (guard) return guard;
+    const running = [...(this.conversation?.tasks.keys() ?? [])];
+    const dispatched = this.active.dispatch({ kind: "stop_all", ...this.drawn(), by: "client" });
+    return match(dispatched)
+      .with({ kind: "committed" }, (): CommandResult => ({
+        ok: true,
+        result: { interrupted: running },
+      }))
+      .with({ kind: "failed" }, ({ error }) =>
+        fail("record_failure", `stop not recorded: ${errorMessage(error)}`),
+      )
+      .with({ kind: "rejected" }, ({ rejection }): CommandResult =>
+        rejection.kind === "already_stopping"
+          ? { ok: true, result: { already_stopping: true } }
+          : { ok: true, result: { interrupted: [] } },
+      )
       .exhaustive();
   }
 
-  /**
-   * Record a refused permission request as an error the client is told of: a follow-up to the refusal, which already
-   * holds the runtime's answer, so a record that fails only logs.
-   */
-  private recordRefusal(taskId: string, detail: string): void {
+  /** A client's diagnostics: under the active conversation it is about, else as its row alone. */
+  private diagnosticSnapshot(
+    ctx: CommandContext,
+    payload: { conversation_id: string | null; diagnostics: ClientDiagnostics },
+  ): CommandResult {
     try {
-      // Rejected, the task ended; unreachable, as the refusal was decided against it just before.
-      this.dispatchUnrefused({
-        kind: "permission_refused",
-        origin: this.origin,
-        taskId,
-        detail,
-        ids: { event: this.deps.newId("evt") },
+      const machine = this.machine;
+      if (machine && this.conversation?.id === payload.conversation_id) {
+        const dispatched = machine.dispatch({
+          kind: "client_diagnostics",
+          ...this.drawn(),
+          from: { clientId: ctx.clientId, connectionId: ctx.connectionId },
+          diagnostics: payload.diagnostics,
+        });
+        if (dispatched.kind === "failed") throw dispatched.error;
+        return { ok: true };
+      }
+      this.deps.writer.recordDiagnostics({
+        id: this.deps.newId("diag"),
+        receivedAt: this.deps.now().toISOString(),
+        conversationId: null,
+        clientId: ctx.clientId,
+        clientConnectionId: ctx.connectionId,
+        eventId: null,
+        capturedAt: payload.diagnostics.captured_at,
+        state: payload.diagnostics,
       });
+      return { ok: true };
     } catch (error) {
-      this.deps.log(`could not record a refused permission request: ${errorMessage(error)}`);
+      return fail("record_failure", errorMessage(error));
     }
   }
 
-  /**
-   * The runtime dropped the held prompt (process gone or turn aborted): the pending approval can never release
-   * anything. Returns the runtime's answer; `prompts` calls this at most once per hold, and never after a reply. The
-   * expiry is dispatched at once, unless the request that asked is still being dispatched: the prompt was dropped
-   * before Mia held it, its hold was refused, or one of its commit's effects aborted it. A dispatch from there would
-   * be nested, which the kernel refuses, so `decidePermission` dispatches the expiry once the request's dispatch has
-   * returned; nothing can decide the approval in between, since the dispatch is synchronous. Only the asking request
-   * is covered: the prompt of an earlier request, aborted synchronously by another commit's effect, would have its
-   * expiry refused as nested, and stay decidable. Nothing does that: the runtime drops a prompt from its own I/O, and
-   * reports what an interrupt causes only after `interrupt` returns (see `TurnHandle`).
-   */
-  private abandon(asking: Asking, callId: string): PermissionDecision {
-    const task = this.taskOf(asking.taskId);
-    const call = task ? callById(task, callId) : undefined;
-    // Unreachable while the turn's end answers every prompt still held before its task is cleared (startTurn).
-    if (!task || !call) return TURN_ENDED;
-    if (asking.dispatching) asking.expireAfter = callId;
-    else this.expireAbandoned(task.id, callId);
-    return abandonedPromptDenial(call.toolIdentity);
-  }
-
-  /** Expire the approval of call `callId`, whose prompt the runtime abandoned, and invalidate the call. */
-  private expireAbandoned(taskId: string, callId: string): void {
-    const abandoned: PromptAbandonedEvent = {
-      kind: "prompt_abandoned",
-      origin: this.origin,
-      taskId,
-      callId,
-      ids: { resolved: this.deps.newId("evt") },
-    };
-    // Rejected, the approval was no longer pending (or the call is gone), so there is nothing to expire.
-    const dispatched = this.dispatch(abandoned);
-    if (dispatched.kind === "failed") {
-      this.deps.log(`could not record abandoned approval: ${String(dispatched.error)}`);
-      // The runtime is denied whatever the records say, so memory takes the expiry anyway (#165). Nothing has run
-      // since the failed commit, so it is decided from the state the expiry was decided from.
-      this.dispatchMemoryOnly({ ...abandoned, kind: "abandonment_unrecorded" });
-    }
-  }
-
-  // ---------------------------------------------------------------- turn completion
-
-  private async finishTurn(taskId: string, result: TurnResult): Promise<void> {
-    const ended = this.taskOf(taskId);
-    // Unreachable: only the turn's end clears its task, once this has returned (startTurn).
-    if (!ended) {
-      this.deps.log(`turn of task ${taskId} ended after its task was cleared; not recorded`);
-      return;
-    }
-    // Before the reads below yield (see `runtimeExitTransition`).
-    this.dispatchMemoryOnly({ kind: "runtime_exited", taskId });
-    // Read and store before the transaction: retaining evidence is best-effort, so a read or store that fails
-    // becomes a failed capture that says why, and the transaction only records that outcome. Its rows then commit
-    // or fail with the turn's end, like every other record of it. Read and store before anything else is
-    // computed: a command handled while they are awaited (a decision) changes the task, and the records must
-    // reflect it.
-    // The calls whose bodies are read are chosen now, and nothing handled while the reads are awaited changes which
-    // they are: with the runtime ended, no call can be released, and a tool result arriving now is dropped.
-    const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
-    const [transcript, hookRead, unresultedBodies] = await Promise.all([
-      this.deps.readEvidence(result.streamLogPath, { signal }),
-      this.deps.readEvidence(result.hookEvidencePath, { signal }),
-      this.readUnresultedBodies(ended),
-    ]);
-    const hookEvidence = hookEvidenceFrom(hookRead);
-    const hooks = hookEvidence.records;
-    const [transcriptRetention, hookRetention] = await Promise.all([
-      transcript.status === "absent" ? null : this.store(evidenceCapture(transcript), signal),
-      hooks.length === 0
-        ? null
-        : this.store(
-            {
-              status: "retained",
-              bytes: Buffer.from(hooks.map((hook) => JSON.stringify(hook)).join("\n") + "\n"),
-            },
-            signal,
-          ),
-    ]);
-    // The task as the commands handled while the reads were awaited left it.
-    const task = this.taskOf(taskId);
-    if (!task) {
-      this.deps.log(`turn of task ${taskId} ended after its task was cleared; not recorded`);
-      return;
-    }
-    const ids = {
-      transcript: { artifact: this.deps.newId("art"), link: this.deps.newId("link") },
-      hooks: { artifact: this.deps.newId("art"), link: this.deps.newId("link") },
-      outcome: this.deps.newId("evt"),
-      finished: this.deps.newId("evt"),
-      error: this.deps.newId("evt"),
-    };
-    let recorded = false;
+  private heartbeat(
+    ctx: CommandContext,
+    payload: Extract<ClientCommand, { type: "heartbeat" }>["payload"],
+  ): CommandResult {
     try {
-      // Every approval the records still hold pending (see `TurnEndedEvent.stillPending`). Read just before the
-      // decision, with nothing awaited in between, so no approval can be requested or resolved after the read and
-      // before the commit; inside the try, so a failed read is handled as a failed commit.
-      const stillPending = this.deps.catalog.all<{ id: string }>(
-        "SELECT a.id FROM approvals a JOIN tool_calls t ON t.id = a.tool_call_id WHERE t.task_id = ? AND a.status = 'pending'",
-        task.id,
-      );
-      const dispatched = this.dispatch({
-        kind: "turn_ended",
-        origin: this.origin,
-        taskId,
-        result,
-        transcript: transcriptRetention,
-        hooks: { evidence: hookEvidence, retention: hookRetention },
-        unresultedBodies,
-        stillPending: stillPending.map(({ id }) => id),
-        ids,
+      recordHeartbeat({
+        writer: this.deps.writer,
+        newId: this.deps.newId,
+        now: this.deps.now,
+        from: ctx,
+        conversationId:
+          this.conversation?.id === payload.conversation_id ? payload.conversation_id : null,
+        payload,
       });
-      // Rejected, the task was cleared; unreachable, as it was read just above with nothing awaited since.
-      if (dispatched.kind === "failed")
-        this.deps.log(`finishTurn record failure: ${String(dispatched.error)}`);
-      recorded = dispatched.kind === "committed";
-    } catch (recordError) {
-      this.deps.log(`finishTurn record failure: ${String(recordError)}`);
+      return { ok: true };
+    } catch (error) {
+      return fail("record_failure", errorMessage(error));
     }
-    // A committed end left the note; one that was not still leaves it, as the next turn's only account of this one.
-    if (!recorded) this.dispatchMemoryOnly({ kind: "turn_unrecorded", taskId });
   }
 
   /**
-   * Stop for good: refuse every later command, interrupt the active task exactly as interrupt_task does (the
-   * gate closes, pending approvals are invalidated, the outcome is recorded), then wait for the task to
-   * finish or for `turnWait` to abort. It never rejects. When the interruption cannot be recorded the
-   * runtime is killed anyway, because a runtime left running outlives the server and can keep calling tools.
-   * When `turnWait` aborts, a turn whose runtime has ended but whose evidence is still being read or stored is
-   * recorded without the evidence still pending (recording is then synchronous, so the wait for it is bounded). A task
-   * whose runtime is still running then finishes, if ever, into a closed catalog and stays unrecorded.
+   * Stop for good: refuse every later command, stop every task as the interrupt control does, and wait for the
+   * session's end to be recorded or for `turnWait` to abort. It never rejects; a stop that cannot be recorded kills the
+   * session anyway, because a runtime left running outlives the server and can keep calling tools.
    */
   async shutdown(turnWait: AbortSignal): Promise<void> {
     this.shuttingDown = true;
-    this.starting?.abandon.abort(new Error("the server is shutting down"));
-    const task = this.task;
-    if (!task) return;
-    const interruption = ((): CommandResult => {
-      try {
-        return this.interrupt(task);
-      } catch (error) {
-        // A transition that throws is a bug; the runtime is killed below all the same.
-        return fail("internal", `interruption failed: ${errorMessage(error)}`);
+    const session = this.session;
+    if (session) {
+      const dispatched = this.report(session.machine, {
+        kind: "stop_all",
+        ...this.drawn(),
+        by: "shutdown",
+      });
+      if (dispatched?.kind !== "committed") {
+        this.deps.log("shutdown: the stop was not recorded; killing the session anyway");
+        session.handle
+          .stop(this.deps.stopDeadline())
+          .catch((error: unknown) => this.deps.log(`stop failed: ${errorMessage(error)}`));
       }
-    })();
-    const turn = this.running;
-    if (!interruption.ok) {
-      this.deps.log(`shutdown: ${interruption.message}; killing the runtime anyway`);
-      turn?.handle
-        .interrupt()
-        .catch((error: unknown) => this.deps.log(`interrupt failed: ${errorMessage(error)}`));
+      const timedOut = Promise.withResolvers<undefined>();
+      const onAbort = () => timedOut.resolve(undefined);
+      if (turnWait.aborted) onAbort();
+      else turnWait.addEventListener("abort", onAbort, { once: true });
+      await Promise.race([session.ended, timedOut.promise]).finally(() =>
+        turnWait.removeEventListener("abort", onAbort),
+      );
     }
-    // A task whose turn never started (the adapter threw as it submitted it) has no runtime to wait for.
-    if (turn?.taskId !== task.id) return;
-    const timedOut = Promise.withResolvers<"timed_out">();
-    const onAbort = () => {
-      this.stopping.abort(new Error("abandoned at shutdown"));
-      timedOut.resolve("timed_out");
-    };
-    if (turnWait.aborted) onAbort();
-    else turnWait.addEventListener("abort", onAbort, { once: true });
-    const outcome = await Promise.race([
-      turn.finished.then(() => "finished" as const),
-      timedOut.promise,
-    ]).finally(() => turnWait.removeEventListener("abort", onAbort));
-    if (outcome === "finished") return;
-    // A task already cleared has finished too.
-    if (this.taskOf(task.id)?.runtimeEnded ?? true) await turn.finished;
-    else
-      this.deps.log(`shutdown: task ${task.id} did not finish in time; its outcome is unrecorded`);
+    this.stopping.abort(new Error("the server is shutting down"));
   }
 }

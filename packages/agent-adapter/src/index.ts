@@ -17,7 +17,15 @@ export { loadProfileSync, ProfileSchema } from "./profile.ts";
 export type { Profile } from "./profile.ts";
 export { ApprovalBridge } from "./bridge.ts";
 export type { PermissionDecision, PermissionHandler, PermissionRequest } from "./bridge.ts";
-export { MANAGER_TOOLS, prepareLaunch, prepareSession, WORKER_AGENT_NAME } from "./launch.ts";
+export { prepareSession } from "./launch.ts";
+export {
+  isManagerTool,
+  MANAGER_TOOLS,
+  readManagerCall,
+  STOP_TOOL,
+  WORKER_AGENT_NAME,
+} from "./manager-tools.ts";
+export type { ManagerCall } from "./manager-tools.ts";
 export type { SessionPlan, WorkerAgentDefinition } from "./launch.ts";
 export { MAX_GATE_PAYLOAD_BYTES, ToolGate } from "./gate.ts";
 export type { GateDecision, GateHandler, GateRequest } from "./gate.ts";
@@ -25,7 +33,6 @@ export { ClaudeCodeSessions } from "./session.ts";
 export type { SessionHandle, SessionOptions, SessionResult } from "./session.ts";
 export {
   ADAPTER_VERSION,
-  ClaudeCodeAdapter,
   hookEvidenceFrom,
   probeStaticCapabilitiesSync,
   readRuntimeFile,
@@ -37,9 +44,6 @@ export type {
   RuntimeFileReadOptions,
   RuntimeFileReader,
   StaticCapabilities,
-  TurnHandle,
-  TurnOptions,
-  TurnResult,
 } from "./adapter.ts";
 export type {
   RuntimeEvent,

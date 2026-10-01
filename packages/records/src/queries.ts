@@ -248,7 +248,6 @@ export interface TaskView {
   created_at: string;
   finished_at: string | null;
   text: string;
-  assistant_text: string;
   partial: boolean;
   executions: ExecutionRow[];
   tool_calls: ToolCallView[];
@@ -259,18 +258,19 @@ export interface TaskView {
 
 const ERROR_EVENT_TYPES = new Set<JournalEventType>(["error", "runtime_stderr"]);
 
-/** Shapes of stored payloads this view reads back. */
-const TextDeltaPayload = z.object({ text: z.string() });
+/** Shapes of stored payloads these views read back. */
+const ReplyDeltaPayload = z.object({ turn_id: z.string(), text: z.string() });
+const MessagePayload = z.object({ text: z.string() });
+const MessageTakenPayload = z.object({
+  message_event_id: z.string(),
+  turn_id: z.string().nullable(),
+});
 const JsonObject = z.record(z.string(), z.unknown());
 
 export const taskViews = (snapshot: ConversationSnapshot): TaskView[] => {
   const { tables } = snapshot;
   return tables.tasks.map((task) => {
     const events = tables.events.filter((event) => event.task_id === task.id);
-    const text = events
-      .filter((event) => event.type === "text_delta")
-      .map((event) => TextDeltaPayload.parse(parseJson(event.payload)).text)
-      .join("");
     const interruption = events.find((event) => event.type === "interruption_outcome");
     return {
       id: task.id,
@@ -278,7 +278,6 @@ export const taskViews = (snapshot: ConversationSnapshot): TaskView[] => {
       created_at: task.created_at,
       finished_at: task.finished_at,
       text: task.text,
-      assistant_text: text,
       partial: task.status !== "completed",
       executions: tables.executions.filter((execution) => execution.task_id === task.id),
       tool_calls: tables.tool_calls
@@ -338,4 +337,46 @@ export const diagnosticsViews = (
       state: parseJson(diagnostic.state),
     };
   });
+};
+
+/** One manager agent's turn as a report shows it: what started it, the messages it took, and its reply. */
+export interface TurnView {
+  id: string;
+  cause: TurnRow["cause"];
+  caused_by_task_id: string | null;
+  status: TurnRow["status"];
+  started_at: string;
+  messages: string[];
+  reply: string;
+}
+
+export const turnViews = (snapshot: ConversationSnapshot): TurnView[] => {
+  const { events, turns } = snapshot.tables;
+  const payload = <T>(event: EventRow, schema: z.ZodType<T>): T | null => {
+    const parsed = schema.safeParse(parseJson(event.payload));
+    return parsed.success ? parsed.data : null;
+  };
+  const messages = new Map(
+    events
+      .filter((event) => event.type === "message_received")
+      .map((event) => [event.id, payload(event, MessagePayload)?.text ?? ""]),
+  );
+  return turns.map((turn) => ({
+    id: turn.id,
+    cause: turn.cause,
+    caused_by_task_id: turn.caused_by_task_id,
+    status: turn.status,
+    started_at: turn.started_at,
+    messages: events
+      .filter((event) => event.type === "message_taken")
+      .map((event) => payload(event, MessageTakenPayload))
+      .filter((taken) => taken?.turn_id === turn.id)
+      .map((taken) => messages.get(taken?.message_event_id ?? "") ?? ""),
+    reply: events
+      .filter((event) => event.type === "reply_delta")
+      .map((event) => payload(event, ReplyDeltaPayload))
+      .filter((delta) => delta?.turn_id === turn.id)
+      .map((delta) => delta?.text ?? "")
+      .join(""),
+  }));
 };

@@ -89,6 +89,11 @@ export class ToolGate {
     this.handler = handler;
   }
 
+  /** Clears `handler` if it is still the one set, so a session that ended cannot clear its successor's. */
+  clearHandler(handler: GateHandler): void {
+    if (this.handler === handler) this.handler = null;
+  }
+
   async start(): Promise<string> {
     const server = createServer((request, response) => {
       this.serve(request, response).catch((error: unknown) =>

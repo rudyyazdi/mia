@@ -1,9 +1,15 @@
 {
-  "format": ["markdown", "typescript", "javascript"],
+  "format": [
+    "markdown",
+    "typescript",
+    "javascript"
+  ],
   "minLines": 4,
   "minTokens": 48,
   "threshold": 0,
-  "reporters": ["console"],
+  "reporters": [
+    "console"
+  ],
   "gitignore": true,
   "ignore": [
     "**/node_modules/**",
@@ -12,7 +18,6 @@
     ".mia-work/**",
     ".mia-state/**",
     "docs/D1/protocol-examples/**",
-    "tests/acceptance/promptfoo/output/**",
-    "prompts/agent-v*.md"
+    "tests/acceptance/promptfoo/output/**"
   ]
 }

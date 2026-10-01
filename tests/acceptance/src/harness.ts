@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach } from "vitest";
 import {
   readRuntimeFile,
@@ -10,18 +10,15 @@ import {
 } from "@mia/agent-adapter";
 import {
   collectArtifact,
-  Engine,
   startServer,
   type ArtifactCollector,
-  type GateHost,
   type MiaServer,
   type SessionRunner,
-  type TurnRunner,
 } from "@mia/server";
 import type { AckError, AckPayload } from "@mia/protocol";
 import { describeAck, MiaClient } from "@mia/text-client";
 import { Catalog, newId } from "@mia/records";
-import { ScriptedRuntime } from "./scripted-runtime.ts";
+import { ScriptedSessions, type ScriptedSession } from "./scripted-session.ts";
 
 export interface TestServer {
   server: MiaServer;
@@ -44,6 +41,8 @@ export interface TestServer {
    * `started` resolves once the engine has asked for it. Once released, the file is captured for real.
    */
   holdArtifactCapture(path: string): HeldRead;
+  /** Ends every wait of a worker agent's call for the report of its start, as if the attribution deadline passed. */
+  expireAttributionWaits(): void;
   /** Replaces the clock the engine stamps its records and sent events with; the system clock until then. */
   setClock(now: () => Date): void;
   connect(clientId?: string): Promise<MiaClient>;
@@ -87,16 +86,6 @@ const TEARDOWN_TURN_WAIT_MS = 3_000;
 const NESTED_DISPATCH = "dispatch while another dispatch is in progress";
 
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-/** The fake Claude Code executable the real adapter launches in offline tests. */
-export const FAKE_RUNTIME = resolve(REPO_ROOT, "tests/fake-claude/bin.sh");
-/** What the fake's shell wrapper needs to find `node`; the test process's env is not read. */
-export const FAKE_RUNTIME_ENV = { PATH: dirname(process.execPath) };
-
-/** The D1 engine a test's server runs; throws for a server running D2's, which a D1 test never starts. */
-export const singleAgentEngine = (server: MiaServer): Engine => {
-  if (!(server.engine instanceof Engine)) throw new Error("the server runs D2's delegating engine");
-  return server.engine;
-};
 
 /** Narrow an optional value the test has already established must exist; throws with a readable message otherwise. */
 export const must = <T>(value: T | null | undefined, what = "value"): T => {
@@ -128,8 +117,10 @@ export const testProfile = (
   overrides: Partial<Profile["runtime"]> = {},
   extra: Partial<Profile> = {},
 ): Profile => {
-  const promptFile = join(dir, "agent-prompt.md");
-  writeFileSync(promptFile, "# test agent prompt v-test\nBe brief.\n");
+  const promptFile = join(dir, "manager-prompt.md");
+  writeFileSync(promptFile, "# test manager prompt v-test\nDelegate every tool call.\n");
+  const workerPromptFile = join(dir, "worker-prompt.md");
+  writeFileSync(workerPromptFile, "# test worker prompt v-test\nDo the task.\n");
   return {
     profile: "acceptance-scripted",
     stateDirectory: join(dir, "state"),
@@ -141,42 +132,37 @@ export const testProfile = (
       model: "scripted-model",
       effort: "medium",
       workingDirectory: join(dir, "work"),
-      builtinTools: [],
-      mcpServers: { d1: { type: "http", url: "http://127.0.0.1:1/mcp" } },
+      mcpServers: { fixture: { type: "http", url: "http://127.0.0.1:1/mcp" } },
       toolPolicy: {
-        mcp__d1__read: "allow",
-        mcp__d1__change: "ask",
-        mcp__d1__slow: "ask",
-        mcp__d1__artifact: "ask",
-        mcp__d1__forbidden: "deny",
+        mcp__fixture__read: "allow",
+        mcp__fixture__change: "ask",
+        mcp__fixture__slow: "ask",
+        mcp__fixture__artifact: "ask",
+        mcp__fixture__forbidden: "deny",
       },
       agentPromptFile: promptFile,
       outputDirectories: [join(dir, "outputs")],
       env: {},
       extraSettings: {},
-      workerAgent: null,
+      workerAgent: { description: "does tool work", promptFile: workerPromptFile },
       exclusiveTools: [],
       ...overrides,
     },
-    architectureDocument: resolve(REPO_ROOT, "docs/D1/PLAN.md"),
+    architectureDocument: resolve(REPO_ROOT, "docs/PLAN.md"),
     notes: [],
     ...extra,
   };
 };
 
 /**
- * Start a server over a fresh directory, with debug mode off unless `options.debugMode`. Without an adapter it
- * runs the real one, which launches `overrides.executable` with `options.env`.
+ * Start a server over a fresh directory, with debug mode off unless `options.debugMode`. It runs `sessions`, the
+ * scripted runtime a test drives, unless it passes `"real"`: then the real sessions launch `overrides.executable`
+ * with `options.env`.
  */
 export const startTestServer = async (
-  adapter: TurnRunner | undefined,
+  sessions: SessionRunner | "real",
   overrides: Partial<Profile["runtime"]> = {},
-  options: {
-    env?: NodeJS.ProcessEnv;
-    debugMode?: boolean;
-    /** D2: the scripted sessions and gate a delegating profile (`overrides.workerAgent`) runs on. */
-    delegation?: { sessions: SessionRunner; gate: GateHost };
-  } = {},
+  options: { env?: NodeJS.ProcessEnv; debugMode?: boolean } = {},
 ): Promise<TestServer> => {
   const { env = {}, debugMode = false } = options;
   const dir = mkdtempSync(join(tmpdir(), "mia-acceptance-"));
@@ -189,6 +175,9 @@ export const startTestServer = async (
   };
   // Replaced on every expiry, so a read that starts afterwards gets a deadline of its own.
   let evidenceDeadline = new AbortController();
+  // A test aborts these itself; none expires on its own.
+  const stopDeadline = new AbortController();
+  const attributionDeadline = new AbortController();
   const holds = new Map<string, PendingHold>();
   // Reads for real once released, or with the aborted signal, so an abandoned read is reported as in production.
   const readEvidence: RuntimeFileReader = async (path, options = {}) => {
@@ -216,10 +205,11 @@ export const startTestServer = async (
   };
   const server = await startServer({
     profile,
-    ...(adapter ? { adapter } : {}),
-    ...(options.delegation ?? {}),
+    ...(sessions === "real" ? {} : { sessions }),
     log,
     evidenceReadDeadline: () => evidenceDeadline.signal,
+    stopDeadline: () => stopDeadline.signal,
+    attributionDeadline: () => attributionDeadline.signal,
     readEvidence,
     collectArtifact: captureArtifact,
     now: () => clock(),
@@ -249,6 +239,7 @@ export const startTestServer = async (
       evidenceDeadline = new AbortController();
     },
     holdEvidenceRead: (path) => holdOn(holds, path),
+    expireAttributionWaits: () => attributionDeadline.abort(),
     holdArtifactCapture: (path) => holdOn(captureHolds, path),
     setClock: (now) => {
       clock = now;
@@ -280,36 +271,33 @@ export const startTestServer = async (
   };
 };
 
-export interface ScriptedSession {
-  runtime: ScriptedRuntime;
+/** What every scripted suite starts from: the scripted runtime behind a fresh server, and one connected client. */
+export interface Scripted {
+  sessions: ScriptedSessions;
   server: TestServer;
   client: MiaClient;
 }
 
 /**
- * The starting point every scripted suite needs: a scripted runtime behind a fresh server, one
- * connected client that has reported diagnostics and started a conversation. Suites differ in what
- * they then submit, not in how they get here, so getting here is defined once.
+ * The starting point every scripted suite needs: the scripted runtime behind a fresh server, one connected client
+ * that has reported diagnostics and started a conversation.
  */
-const startScriptedSession = async (
-  overrides: Partial<Profile["runtime"]> = {},
-): Promise<ScriptedSession> => {
-  const runtime = new ScriptedRuntime();
-  const server = await startTestServer(runtime, overrides);
+const startScripted = async (overrides: Partial<Profile["runtime"]> = {}): Promise<Scripted> => {
+  const sessions = new ScriptedSessions();
+  const server = await startTestServer(sessions, overrides);
   const client = await server.connect("client-A");
   await client.sendDiagnostics();
   await client.startConversation();
-  return { runtime, server, client };
+  return { sessions, server, client };
 };
 
 /**
- * Register the setup and teardown of a scripted suite: one session per test, handed to `hold` so the
- * suite can keep it in its own variables, and closed afterwards whether the test replaced it or not.
- * The returned function restarts the session under a different runtime profile mid-test, which is
- * how a test states the policy it needs without owning the lifecycle.
+ * Register the setup and teardown of a scripted suite: one server per test, handed to `hold` so the suite can keep
+ * it in its own variables, and closed afterwards whether the test replaced it or not. The returned function restarts
+ * it under a different runtime profile mid-test.
  */
-export const useScriptedSession = (
-  hold: (session: ScriptedSession) => void,
+export const useScripted = (
+  hold: (scripted: Scripted) => void,
 ): ((overrides?: Partial<Profile["runtime"]>) => Promise<void>) => {
   let current: TestServer | null = null;
   // Forgotten before it closes, so a close that throws is not repeated by the next test's hooks.
@@ -320,11 +308,27 @@ export const useScriptedSession = (
   };
   const start = async (overrides: Partial<Profile["runtime"]> = {}): Promise<void> => {
     await closeCurrent();
-    const session = await startScriptedSession(overrides);
-    current = session.server;
-    hold(session);
+    const scripted = await startScripted(overrides);
+    current = scripted.server;
+    hold(scripted);
   };
   beforeEach(() => start());
   afterEach(closeCurrent);
   return start;
+};
+
+/**
+ * Send `text` and have the scripted runtime take it in a turn of its own, then start worker agent `runtimeTaskId` for
+ * it when given one: the shape every scripted suite builds tool calls from.
+ */
+export const turnWithWorker = async (
+  scripted: Scripted,
+  input: { text: string; runtimeTaskId?: string },
+): Promise<ScriptedSession> => {
+  ackResult(await scripted.client.submitText(input.text));
+  // The message was handed to the session as its submission committed, so it is the session's latest.
+  const session = must(scripted.sessions.opened.at(-1), "an open session");
+  await session.beginTurn(session.messages.length - 1);
+  if (input.runtimeTaskId !== undefined) await session.delegate(input.runtimeTaskId);
+  return session;
 };

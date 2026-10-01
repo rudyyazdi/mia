@@ -114,7 +114,7 @@ export const writeLaunchFiles = async (setup: LaunchSetup): Promise<void> => {
   for (const file of setup.files) await writeFile(file.path, file.content, { mode: 0o600 });
 };
 
-/** One line of the hook evidence file written by hook-capture.mjs: a JSON object of runtime-reported fields. */
+/** One line of the hook evidence file written by the gate hook (gate-hook.mjs): a JSON object of runtime-reported fields. */
 const HookEvidenceRecordSchema = z.record(z.string(), z.unknown());
 
 export interface HookEvidence {

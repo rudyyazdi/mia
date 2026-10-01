@@ -206,11 +206,7 @@ const NO_SYNC_IO = {
 // itself (the probe, tests and their fixtures), where a stall holds up nobody else.
 const SERVING_WORKSPACES = ["packages", "apps/server", "apps/text-client"];
 const SERVING_FILES = SERVING_WORKSPACES.map((workspace) => `${workspace}/**/*.{ts,js,mjs}`);
-const NOT_SERVING_FILES = [
-  "**/*.test.ts",
-  "packages/agent-adapter/src/hook-capture.mjs",
-  "packages/agent-adapter/src/gate-hook.mjs",
-];
+const NOT_SERVING_FILES = ["**/*.test.ts", "packages/agent-adapter/src/gate-hook.mjs"];
 
 // Enforces AGENTS.md, Node: only the file a process starts from reads the environment, installs
 // signal handlers or exits; every other module takes what it needs as an argument.
@@ -241,7 +237,6 @@ const PROCESS_ENTRY_ONLY = [
 // carries PROCESS_ENTRY_ONLY.
 const PROCESS_ENTRY_FILES = [
   "**/main.ts",
-  "packages/agent-adapter/src/hook-capture.mjs",
   "packages/agent-adapter/src/gate-hook.mjs",
   "tests/acceptance/promptfoo/provider.ts",
 ];

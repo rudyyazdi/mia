@@ -97,6 +97,8 @@ export const RuntimeConfigSchema = z
   })
   .strict();
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
+/** Which agent runtime a profile runs, named once by its configuration's `kind`. */
+export type RuntimeKind = RuntimeConfig["kind"];
 
 /** The MCP server a fully qualified tool identity (mcp__<server>__<tool>) names, or null when it names none. */
 export const serverOf = (identity: string): string | null =>

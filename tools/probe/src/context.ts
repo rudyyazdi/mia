@@ -3,8 +3,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
-  ApprovalBridge,
-  ClaudeCodeSessions,
   ToolGate,
   untilAborted,
   LiveCallBudget,
@@ -13,6 +11,7 @@ import {
   type GateRequest,
   type RuntimeConfig,
 } from "@mia/agent-adapter";
+import { ApprovalBridge, ClaudeCodeSessions } from "@mia/claude-code-adapter";
 import { FixtureHarness, startFixture } from "@mia/controlled-mcp";
 import { redactValue } from "@mia/protocol";
 import type { ProbeDeadlines, ProbeOptions, SessionRecord, SessionSpec } from "./record.ts";
@@ -153,7 +152,7 @@ export class ProbeContext {
         mcp__fixture__artifact: "ask",
         mcp__fixture__forbidden: "deny",
       },
-      agentPromptFile: resolve("prompts/manager-v1.md"),
+      agentPromptFile: resolve("prompts/manager-v2.md"),
       workerAgent: {
         description:
           "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",

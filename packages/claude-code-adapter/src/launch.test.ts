@@ -3,7 +3,7 @@ import { existsSync, mkdtempDisposableSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { RuntimeConfig } from "./config.ts";
+import type { RuntimeConfig } from "@mia/agent-adapter";
 import { MCP_TOOL_TIMEOUT_MS, prepareSession, shellQuoted } from "./launch.ts";
 
 /** A session plan for a minimal config working in `dir`, inheriting `env`, with `fields` replaced. */

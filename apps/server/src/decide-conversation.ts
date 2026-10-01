@@ -6,6 +6,7 @@ import {
   type HookEvidence,
   type ManagerCall,
   type RuntimeInit,
+  type RuntimeKind,
   type TurnSummary,
 } from "@mia/agent-adapter";
 import type { Decide, Decision as MachineDecision } from "@mia/kernel";
@@ -74,11 +75,18 @@ interface Drawn {
   newId: NewId;
 }
 
+/** What the profile asks an execution to run on; what the runtime reports it ran is recorded on the execution. */
+export interface Requested {
+  runtime: RuntimeKind;
+  model: string;
+  effort: Effort;
+}
+
 export interface MessageEvent extends Drawn {
   kind: "message_submitted";
   text: string;
   clientId: string;
-  requested: { model: string; effort: Effort };
+  requested: Requested;
   /** Written by Mia rather than typed by the person, e.g. asking the manager agent to stop a task. */
   fromMia: boolean;
   /** The UUID the message is sent to the runtime under, which it replays when a turn takes the message. */
@@ -116,7 +124,7 @@ export interface WorkerStartedEvent extends Drawn {
   delegationCallId: string;
   description: string;
   clientId: string | null;
-  requested: { model: string; effort: Effort };
+  requested: Requested;
 }
 
 export interface WorkerEndedEvent extends Drawn {
@@ -319,7 +327,7 @@ const messageSubmitted = (state: ConversationState, event: MessageEvent, now: Da
         taskId: null,
         agentRole: "manager",
         conversationId: state.id,
-        runtimeIdentity: "claude-code",
+        runtimeIdentity: event.requested.runtime,
         runtimeConversationId: state.runtimeConversationId,
         requestedModel: event.requested.model,
         requestedEffort: event.requested.effort,
@@ -601,7 +609,7 @@ const workerStarted = (state: ConversationState, event: WorkerStartedEvent, now:
         taskId,
         agentRole: "worker",
         conversationId: state.id,
-        runtimeIdentity: "claude-code",
+        runtimeIdentity: event.requested.runtime,
         runtimeConversationId: event.runtimeTaskId,
         requestedModel: event.requested.model,
         requestedEffort: event.requested.effort,

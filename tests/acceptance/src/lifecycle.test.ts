@@ -3,7 +3,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { startServer } from "@mia/server";
+import { ClaudeCodeRuntime } from "@mia/claude-code-adapter";
+import { startServer, type MiaServer } from "@mia/server";
 import type { TaskStatus } from "@mia/protocol";
 import { Catalog } from "@mia/records";
 import { ackError, ackResult, startTestServer, testProfile } from "./harness.ts";
@@ -12,6 +13,13 @@ import { ScriptedSessions, type ScriptedSession } from "./scripted-session.ts";
 /** Listening TCP servers this process owns: a socket nobody closed is still counted here. */
 const listeningServers = (): number =>
   process.getActiveResourcesInfo().filter((resource) => resource === "TCPServerWrap").length;
+
+/** The approval bridge's URL: the test profile runs Claude Code, whose runtime serves the bridge. */
+const bridgeUrlOf = (server: MiaServer): string => {
+  if (!(server.runtime instanceof ClaudeCodeRuntime))
+    throw new Error("the test profile runs Claude Code");
+  return server.runtime.bridge.url;
+};
 
 const listenOnFreePort = async (): Promise<{ server: Server; port: number }> => {
   const server = createServer();
@@ -90,7 +98,7 @@ describe("server lifecycle", () => {
       });
       try {
         // The bridge refuses a GET, and logs the refusal.
-        const response = await fetch(server.bridge.url, { signal: AbortSignal.timeout(5_000) });
+        const response = await fetch(bridgeUrlOf(server), { signal: AbortSignal.timeout(5_000) });
         expect(response.status).toBe(405);
       } finally {
         await server.close(unbounded());
@@ -128,7 +136,7 @@ describe("server lifecycle", () => {
         attributionDeadline: unbounded,
         env: {},
       });
-      const bridgeUrl = server.bridge.url;
+      const bridgeUrl = bridgeUrlOf(server);
       const closeGateway = server.gateway.close;
       let gatewayCloses = 0;
       const gatewayFailure = new Error("simulated gateway close failure");

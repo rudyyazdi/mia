@@ -14,8 +14,8 @@ import {
   type RuntimeFileReader,
   type SessionEvent,
   type SessionHandle,
-  type SessionOptions,
   type SessionResult,
+  type SessionRunner,
 } from "@mia/agent-adapter";
 import { createKernel, Holds, type Dispatched, type FeedLimits, type Machine } from "@mia/kernel";
 import {
@@ -76,11 +76,6 @@ export type CommandResult =
   { ok: true; result?: Record<string, unknown> } | { ok: false; code: ErrorCode; message: string };
 
 const fail = (code: ErrorCode, message: string): CommandResult => ({ ok: false, code, message });
-
-/** What runs the manager agent's sessions: the real `ClaudeCodeSessions`, or a test's scripted runtime. */
-export interface SessionRunner {
-  open(options: SessionOptions): SessionHandle;
-}
 
 export interface EngineDeps {
   profile: Profile;
@@ -527,7 +522,7 @@ export class Engine implements CommandEngine {
           delegationCallId: started.delegationCallId,
           description: started.description,
           clientId: this.clients.clientId,
-          requested: { model: runtime.model, effort: runtime.effort },
+          requested: { runtime: runtime.kind, model: runtime.model, effort: runtime.effort },
         });
         this.wakeWaits(started.runtimeTaskId);
       })
@@ -829,7 +824,7 @@ export class Engine implements CommandEngine {
       ...this.drawn(),
       text: payload.text,
       clientId: ctx.clientId,
-      requested: { model: runtime.model, effort: runtime.effort },
+      requested: { runtime: runtime.kind, model: runtime.model, effort: runtime.effort },
       fromMia,
       runtimeMessageId: this.deps.newRuntimeMessageId(),
     });
@@ -947,7 +942,7 @@ export class Engine implements CommandEngine {
           ctx,
           {
             conversation_id: payload.conversation_id,
-            text: `[Mia] The user stopped the task "${task.id}" (worker agent ${task.runtimeTaskId}). Stop that worker agent now with TaskStop, and do not start it again.`,
+            text: `[Mia] The user stopped the task "${task.id}" (worker agent ${task.runtimeTaskId}). Stop that worker agent now, and do not start it again.`,
           },
           true,
         )

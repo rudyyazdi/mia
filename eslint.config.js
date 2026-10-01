@@ -26,6 +26,11 @@ const LAYERS = [
     mayImportAnything: false,
   },
   {
+    files: ["packages/claude-code-adapter/**"],
+    workspaces: ["@mia/claude-code-adapter"],
+    mayImportAnything: false,
+  },
+  {
     files: ["apps/*/**", "tools/*/**"],
     workspaces: ["@mia/server", "@mia/text-client", "@mia/debug-cli", "@mia/probe"],
     mayImportAnything: false,

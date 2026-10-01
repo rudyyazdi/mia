@@ -7,14 +7,9 @@ import {
   untilAborted,
   type Profile,
   type RuntimeFileReader,
-} from "@mia/agent-adapter";
-import {
-  collectArtifact,
-  startServer,
-  type ArtifactCollector,
-  type MiaServer,
   type SessionRunner,
-} from "@mia/server";
+} from "@mia/agent-adapter";
+import { collectArtifact, startServer, type ArtifactCollector, type MiaServer } from "@mia/server";
 import type { AckError, AckPayload } from "@mia/protocol";
 import { describeAck, MiaClient } from "@mia/text-client";
 import { Catalog, newId } from "@mia/records";

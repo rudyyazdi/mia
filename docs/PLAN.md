@@ -110,7 +110,7 @@ Extend the working voice, text, view, approval, and task-notification journey to
 
 ## Deliverable 7 — Expand agent runtimes and escalation
 
-Add the remaining agent runtimes, each with manager and worker agents, and explicit big-gun escalation. Use the same adapter acceptance checks for each runtime.
+Add the OpenCode runtime, with manager and worker agents, and explicit big-gun escalation for every runtime. Use the same adapter acceptance checks for each runtime. (The Codex adapter is added outside this plan.)
 
 **User acceptance test:** Repeat the text/voice/approval/interruption and delegation journeys with each configured runtime. Escalate the manager agent, have it escalate one of two running worker agents, and verify the other retains its assigned model.
 

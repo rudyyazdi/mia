@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { errorMessage, redactString, type RuntimeCancellation } from "@mia/protocol";
-import { untilAborted } from "./deadline.ts";
+import { untilAborted } from "@mia/agent-adapter";
 import type { SessionPlan } from "./launch.ts";
-import type { RuntimeEvent } from "./runtime-events.ts";
+import type { RuntimeEvent } from "@mia/agent-adapter";
 import { parseStreamLine, redactLine, type RuntimeMessage } from "./stream.ts";
 import { retainStdout } from "./transcript.ts";
 

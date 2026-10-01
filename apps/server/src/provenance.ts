@@ -1,7 +1,6 @@
 import { basename } from "node:path";
 import { match } from "ts-pattern";
 import {
-  ADAPTER_VERSION,
   type Profile,
   type RuntimeFileRead,
   type RuntimeFileReader,
@@ -179,13 +178,8 @@ export const planConversationProvenance = (input: {
           logicalName: basename(worker.path),
         }),
   );
-  // Exposed runtime instructions: the runtime does not expose its full system prompt over the stream.
-  items.push(
-    unavailable(
-      "runtime_instructions",
-      "Claude Code does not expose its effective system prompt or inherited CLAUDE.md content over stream-json",
-    ),
-  );
+  // Exposed runtime instructions: the runtime keeps part of its effective instructions from Mia.
+  items.push(unavailable("runtime_instructions", identity.runtime.undisclosed_instructions));
 
   // Effective configuration, redacted.
   const configText = JSON.stringify(redactValue(profile), null, 2);
@@ -214,10 +208,10 @@ export const planConversationProvenance = (input: {
   items.push(
     retained("runtime_identity", {
       bytes: json({
-        runtime: "claude-code",
+        runtime: staticCaps.runtime,
         runtime_version: staticCaps.runtime_version,
         executable: staticCaps.executable_resolved,
-        adapter_version: ADAPTER_VERSION,
+        adapter_version: staticCaps.adapter_version,
         protocol_version: PROTOCOL_VERSION,
         node: process.version,
       }),

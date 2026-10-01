@@ -22,7 +22,7 @@
       "mcp__example__lookup": "allow",
       "mcp__example__act": "ask"
     },
-    "agentPromptFile": "../../prompts/manager-v1.md",
+    "agentPromptFile": "../../prompts/manager-v2.md",
     "workerAgent": {
       "description": "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
       "promptFile": "../../prompts/worker-v1.md"

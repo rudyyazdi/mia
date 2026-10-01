@@ -2,20 +2,20 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  ApprovalBridge,
-  ClaudeCodeSessions,
   ToolGate,
   loadProfileSync,
-  probeStaticCapabilitiesSync,
   readRuntimeFile,
+  type AgentRuntime,
   type Profile,
   type RuntimeFileReader,
+  type SessionRunner,
 } from "@mia/agent-adapter";
+import { ClaudeCodeRuntime, probeClaudeCodeSync } from "@mia/claude-code-adapter";
 import { errorMessage } from "@mia/protocol";
 import { Catalog, RecordWriter, newId, type NewId } from "@mia/records";
 import { collectArtifact, type ArtifactCollector } from "./artifact-collector.ts";
 import { collectBuildInfoSync } from "./build-info.ts";
-import { Engine, type SessionRunner } from "./engine.ts";
+import { Engine } from "./engine.ts";
 import { startGateway, type GatewayHandle } from "./gateway.ts";
 import type { ServerIdentity } from "./provenance.ts";
 
@@ -24,11 +24,13 @@ export interface MiaServer {
   gateway: GatewayHandle;
   engine: Engine;
   catalog: Catalog;
-  bridge: ApprovalBridge;
+  /** The profile's agent runtime, started; a test's scripted runtime replaces only its sessions. */
+  runtime: AgentRuntime;
   /**
    * Shut down: stop accepting commands, stop the active session and wait for its end to be recorded until `turnWait`
    * aborts,
-   * close the gateway (waiting, until `turnWait` aborts, for commands still storing their replies) and the bridge,
+   * close the gateway (waiting, until `turnWait` aborts, for commands still storing their replies), the gate and the
+   * runtime,
    * then close the catalog. Every step runs even when an earlier one fails,
    * and the returned promise rejects with all their errors only after the last. Memoised: a second call (a
    * SIGTERM after a SIGINT) awaits the first run and sees its outcome; its own `turnWait` is not used.
@@ -79,7 +81,7 @@ const resolveProfileSync = (input: {
 export const startServer = async (input: {
   profilePath?: string;
   profile?: Profile;
-  /** Runs the manager agent's sessions; defaults to `ClaudeCodeSessions`. A test injects a scripted runtime. */
+  /** Runs the manager agent's sessions; defaults to the profile runtime's. A test injects a scripted runtime. */
   sessions?: SessionRunner;
   log?: (message: string) => void;
   /**
@@ -107,7 +109,7 @@ export const startServer = async (input: {
   debugMode?: boolean;
   /**
    * The server process's environment: fills a profile's `${ENV}` placeholders, is what the runtime
-   * inherits and is probed with at startup, and names the bridge's request log (`MIA_MCP_HTTP_LOG`).
+   * inherits and is probed with at startup, and names the runtime's MCP request log (`MIA_MCP_HTTP_LOG`).
    * The entry point passes its own.
    */
   env: NodeJS.ProcessEnv;
@@ -117,7 +119,7 @@ export const startServer = async (input: {
   const log = input.log ?? ((message: string) => process.stderr.write(`[mia-server] ${message}\n`));
   const identity: ServerIdentity = {
     // eslint-disable-next-line no-restricted-syntax -- runs before serving
-    runtime: probeStaticCapabilitiesSync(profile.runtime, input.env),
+    runtime: probeClaudeCodeSync(profile.runtime, input.env),
     // eslint-disable-next-line no-restricted-syntax -- runs before serving
     build: collectBuildInfoSync("mia-server", SOURCE_ROOT),
   };
@@ -129,18 +131,23 @@ export const startServer = async (input: {
   try {
     const writer = new RecordWriter(catalog);
     const now = input.now ?? (() => new Date());
-    const bridge = new ApprovalBridge({ logFile: input.env.MIA_MCP_HTTP_LOG });
-    await bridge.start();
     const gate = new ToolGate();
+    let runtime: AgentRuntime | null = null;
     try {
       await gate.start();
+      runtime = await ClaudeCodeRuntime.start({
+        config: profile.runtime,
+        gate,
+        env: input.env,
+        bridgeLog: input.env.MIA_MCP_HTTP_LOG,
+      });
+      const started = runtime;
       const engine = new Engine({
         profile,
         catalog,
         writer,
         identity,
-        sessions:
-          input.sessions ?? new ClaudeCodeSessions(profile.runtime, { gate, bridge }, input.env),
+        sessions: input.sessions ?? runtime.sessions,
         evidenceReadDeadline: input.evidenceReadDeadline,
         stopDeadline: input.stopDeadline,
         attributionDeadline: input.attributionDeadline,
@@ -179,7 +186,7 @@ export const startServer = async (input: {
         await step(() => engine.shutdown(turnWait));
         await step(() => gateway.close(turnWait));
         await step(() => gate.close());
-        await step(() => bridge.close());
+        await step(() => started.close());
         await step(() => catalog.close());
         if (errors.length > 0)
           throw new AggregateError(
@@ -192,13 +199,13 @@ export const startServer = async (input: {
         gateway,
         engine,
         catalog,
-        bridge,
+        runtime,
         // Memoised: SIGINT then SIGTERM must await the one shutdown, not release these resources twice.
         close: (turnWait) => (shutdownStarted ??= shutdown(turnWait)),
       };
     } catch (error) {
       await gate.close();
-      await bridge.close();
+      await runtime?.close();
       throw error;
     }
   } catch (error) {

@@ -1,11 +1,11 @@
-import { probeStaticCapabilitiesSync } from "@mia/agent-adapter";
+import { probeClaudeCodeSync } from "@mia/claude-code-adapter";
 import { log, ProbeContext } from "./context.ts";
 import type { ProbeDeadlines, ProbeOptions } from "./record.ts";
 import { workerBackground, workerGate, workerInterrupt, workerStop } from "./steps.ts";
 
 /** Runs the static probe and then every wanted live session; resolves to the process exit code. */
 const runSteps = async (context: ProbeContext): Promise<number> => {
-  const staticReport = probeStaticCapabilitiesSync(context.baseConfig(), context.env);
+  const staticReport = probeClaudeCodeSync(context.baseConfig(), context.env);
   context.save("static-capabilities", staticReport);
   log("static:", JSON.stringify(staticReport, null, 1));
   if (staticReport.errors.length > 0) {

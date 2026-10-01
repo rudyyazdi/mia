@@ -5,9 +5,9 @@ import type {
   SessionHandle,
   SessionOptions,
   SessionResult,
+  SessionRunner,
 } from "@mia/agent-adapter";
 import type { RuntimeCancellation } from "@mia/protocol";
-import type { SessionRunner } from "@mia/server";
 
 // A scripted substitute for the runtime (the only thing acceptance tests fake): the test plays the manager agent's
 // session, reporting turns and worker agents and asking the engine about calls exactly as the real session and its
@@ -41,11 +41,7 @@ export class ScriptedSession {
         session_id: options.runtimeConversationId,
         resume: options.resume,
         builtin_tools: ["Task", "TaskStop"],
-        worker_agents: {},
         mcp_servers: [],
-        gate: "pre_tool_use_hook",
-        settings: {},
-        mcp_config: {},
       },
     };
     this.finish = (status) => this.ended.resolve({ ...result, status, cancellation: "not_needed" });

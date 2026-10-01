@@ -1,15 +1,16 @@
 import { join, resolve } from "node:path";
-import type { Effort } from "@mia/protocol";
-import { runtimeMcpServer, type RuntimeConfig } from "./config.ts";
+import {
+  GATE_HOOK_PATH,
+  MANAGER_TOOLS,
+  MAX_GATE_PAYLOAD_BYTES,
+  runtimeMcpServer,
+  STOP_TOOL,
+  WORKER_AGENT_NAME,
+  type LaunchDescription,
+  type LaunchSetup,
+  type RuntimeConfig,
+} from "@mia/agent-adapter";
 import { BRIDGE_SERVER_NAME, BRIDGE_TOOL_IDENTITY } from "./bridge.ts";
-import { GATE_HOOK_PATH, MAX_GATE_PAYLOAD_BYTES } from "./gate.ts";
-import { MANAGER_TOOLS, WORKER_AGENT_NAME } from "./manager-tools.ts";
-
-/** Directories (owner-only) to create, in order, then files (owner-only) to write into them. */
-export interface LaunchSetup {
-  directories: string[];
-  files: { path: string; content: string }[];
-}
 
 /** One argument of the hook's shell command, single-quoted so the shell expands nothing in it (`$()`, backticks). */
 export const shellQuoted = (part: string): string => `'${part.replaceAll("'", `'\\''`)}'`;
@@ -93,6 +94,12 @@ export interface WorkerAgentDefinition {
   tools: string[];
 }
 
+/**
+ * How the manager agent delegates and stops work in Claude Code, appended to its system prompt after Mia's own
+ * instructions, which name no runtime's tools.
+ */
+export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call the Task tool with subagent type \`${WORKER_AGENT_NAME}\` and \`run_in_background: true\`, with the task as its prompt. To stop a worker agent, call ${STOP_TOOL} with its task id.`;
+
 export interface SessionPlan {
   command: string;
   args: string[];
@@ -100,16 +107,11 @@ export interface SessionPlan {
   cwd: string;
   files: { streamLog: string; hookEvidence: string };
   setup: LaunchSetup;
-  /** Redacted, retained description of what was launched (no secrets, no prompts). */
-  description: {
-    model: string;
-    effort: Effort;
-    session_id: string;
-    resume: boolean;
-    builtin_tools: string[];
+  /** Redacted, retained description of what was launched (no secrets, no Mia-owned prompts). */
+  description: LaunchDescription & {
     worker_agents: Record<string, Omit<WorkerAgentDefinition, "prompt">>;
-    mcp_servers: string[];
     gate: "pre_tool_use_hook";
+    delegation_instructions: string;
     settings: unknown;
     mcp_config: unknown;
   };
@@ -202,6 +204,8 @@ export const prepareSession = (input: SessionInput): SessionPlan => {
     ...(input.managerPromptFile === null
       ? []
       : ["--append-system-prompt-file", resolve(input.managerPromptFile)]),
+    "--append-system-prompt",
+    DELEGATION_INSTRUCTIONS,
     input.resume ? "--resume" : "--session-id",
     input.sessionId,
   ];
@@ -237,6 +241,7 @@ export const prepareSession = (input: SessionInput): SessionPlan => {
       ),
       mcp_servers: Object.keys(mcpConfig.mcpServers),
       gate: "pre_tool_use_hook",
+      delegation_instructions: DELEGATION_INSTRUCTIONS,
       settings,
       mcp_config: mcpConfig,
     },

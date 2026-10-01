@@ -7,11 +7,11 @@ import { z } from "zod";
 import { errorMessage } from "@mia/protocol";
 
 /**
- * The tool gate: Claude Code runs Mia's PreToolUse hook (`gate-hook.mjs`) before every tool call, from the
- * manager agent and from every worker agent, background ones included, and the hook asks this server what to do.
- * It exists because a background worker agent never reaches `--permission-prompt-tool`: the runtime denies any of
- * its calls that would prompt (see the capability record). The hook blocks until Mia decides, so a held approval
- * holds only the worker agent that asked.
+ * The tool gate: the runtime runs Mia's PreToolUse hook (`gate-hook.mjs`) before every tool call, from the manager
+ * agent and from every worker agent, background ones included, and the hook asks this server what to do. The hook
+ * blocks until Mia decides, so a held approval holds only the worker agent that asked. Claude Code needs it because
+ * a background worker agent never reaches `--permission-prompt-tool`: the runtime denies any of its calls that would
+ * prompt (see the capability record).
  *
  * capability record: https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456
  */

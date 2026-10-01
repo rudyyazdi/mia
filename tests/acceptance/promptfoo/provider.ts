@@ -26,7 +26,7 @@ export default class MiaScenarioProvider {
   constructor(options: ProviderOptions = {}) {
     this.providerId = options.id ?? "mia-live";
     this.promptVersion =
-      options.config?.promptVersion ?? process.env.MIA_MANAGER_PROMPT_VERSION ?? "manager-v1";
+      options.config?.promptVersion ?? process.env.MIA_MANAGER_PROMPT_VERSION ?? "manager-v2";
   }
 
   id(): string {

@@ -1,6 +1,6 @@
 import { match } from "ts-pattern";
 import { describe, expect, it } from "vitest";
-import { readManagerCall } from "@mia/agent-adapter";
+import { readManagerCall, type WorkerEnd } from "@mia/agent-adapter";
 import type { NewId } from "@mia/records";
 import {
   decideConversation,
@@ -139,11 +139,12 @@ const workerStarted = (runtimeTaskId: string): ConversationEvent => ({
   clientId: "client_owner",
   requested: REQUESTED,
 });
-const workerEnded = (runtimeTaskId: string, status = "completed"): ConversationEvent => ({
+const workerEnded = (runtimeTaskId: string, end: WorkerEnd = "completed"): ConversationEvent => ({
   kind: "worker_ended",
   ...drawn,
   runtimeTaskId,
-  status,
+  end,
+  runtimeStatus: end,
   summary: null,
 });
 

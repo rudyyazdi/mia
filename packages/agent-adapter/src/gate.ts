@@ -16,12 +16,41 @@ import { errorMessage } from "@mia/protocol";
  * capability record: https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456
  */
 
-export const GATE_HOOK_PATH = join(import.meta.dirname, "gate-hook.mjs");
+const GATE_HOOK_PATH = join(import.meta.dirname, "gate-hook.mjs");
 
 /** Largest hook payload the gate reads; a bigger one is refused, and the hook then denies the call. */
 export const MAX_GATE_PAYLOAD_BYTES = 1024 * 1024;
 
-/** The PreToolUse hook input observed from Claude Code 2.1.283; extra fields are retained raw. */
+/** One argument of a shell command, single-quoted so the shell expands nothing in it (`$()`, backticks). */
+export const shellQuoted = (part: string): string => `'${part.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The shell command a runtime runs as Mia's PreToolUse hook: the gate hook asking `gateUrl`, appending each hook
+ * input to `evidence`. `allowSilently` is for a runtime that refuses an explicit allow (see gate-hook.mjs).
+ */
+export const gateHookCommand = (input: {
+  gateUrl: string;
+  evidence: string;
+  allowSilently: boolean;
+}): string =>
+  [
+    process.execPath,
+    GATE_HOOK_PATH,
+    "--gate",
+    input.gateUrl,
+    "--evidence",
+    input.evidence,
+    "--max-bytes",
+    String(MAX_GATE_PAYLOAD_BYTES),
+    ...(input.allowSilently ? ["--allow-silently"] : []),
+  ]
+    .map(shellQuoted)
+    .join(" ");
+
+/**
+ * The PreToolUse hook input observed from Claude Code 2.1.283 and Codex 0.159.3, which both report a worker agent's
+ * call with its `agent_id` and `agent_type`; extra fields (Codex adds `turn_id`) are retained raw.
+ */
 const GatePayloadSchema = z
   .object({
     tool_name: z.string(),

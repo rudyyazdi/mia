@@ -26,8 +26,13 @@ const LAYERS = [
     mayImportAnything: false,
   },
   {
-    files: ["packages/claude-code-adapter/**"],
-    workspaces: ["@mia/claude-code-adapter"],
+    files: ["packages/claude-code-adapter/**", "packages/codex-adapter/**"],
+    workspaces: ["@mia/claude-code-adapter", "@mia/codex-adapter"],
+    mayImportAnything: false,
+  },
+  {
+    files: ["packages/runtimes/**"],
+    workspaces: ["@mia/runtimes"],
     mayImportAnything: false,
   },
   {
@@ -207,11 +212,15 @@ const NO_SYNC_IO = {
 };
 
 // The workspaces that serve: the server, the libraries it runs, and the text client. Left out are one-shot
-// processes (the debug CLI, the runtime's hook scripts) and code whose only client is a runtime it spawned
+// processes (the debug CLI, the runtime's hook scripts, a test's fake runtime) and code whose only client is a runtime it spawned
 // itself (the probe, tests and their fixtures), where a stall holds up nobody else.
 const SERVING_WORKSPACES = ["packages", "apps/server", "apps/text-client"];
 const SERVING_FILES = SERVING_WORKSPACES.map((workspace) => `${workspace}/**/*.{ts,js,mjs}`);
-const NOT_SERVING_FILES = ["**/*.test.ts", "packages/agent-adapter/src/gate-hook.mjs"];
+const NOT_SERVING_FILES = [
+  "**/*.test.ts",
+  "packages/agent-adapter/src/gate-hook.mjs",
+  "packages/codex-adapter/src/fixtures/fake-app-server.mjs",
+];
 
 // Enforces AGENTS.md, Node: only the file a process starts from reads the environment, installs
 // signal handlers or exits; every other module takes what it needs as an argument.
@@ -237,12 +246,13 @@ const PROCESS_ENTRY_ONLY = [
   },
 ];
 
-// The files a process starts from other than a main.ts: the runtime's hook scripts and the promptfoo
-// provider plugin. The override below turns no-restricted-properties off for them, which only
+// The files a process starts from other than a main.ts: the runtime's hook scripts, the Codex adapter's fake
+// runtime and the promptfoo provider plugin. The override below turns no-restricted-properties off for them, which only
 // carries PROCESS_ENTRY_ONLY.
 const PROCESS_ENTRY_FILES = [
   "**/main.ts",
   "packages/agent-adapter/src/gate-hook.mjs",
+  "packages/codex-adapter/src/fixtures/fake-app-server.mjs",
   "tests/acceptance/promptfoo/provider.ts",
 ];
 

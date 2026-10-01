@@ -9,7 +9,7 @@ import {
   validateRuntimeConfig,
   type GateDecision,
   type GateRequest,
-  type RuntimeConfig,
+  type ClaudeCodeConfig,
 } from "@mia/agent-adapter";
 import { ClaudeCodeRuntime } from "@mia/claude-code-adapter";
 import { FixtureHarness, startFixture } from "@mia/controlled-mcp";
@@ -132,7 +132,7 @@ export class ProbeContext {
     return !this.options.only || this.options.only.split(",").includes(name);
   }
 
-  baseConfig(overrides: Partial<RuntimeConfig> = {}): RuntimeConfig {
+  baseConfig(overrides: Partial<ClaudeCodeConfig> = {}): ClaudeCodeConfig {
     return {
       kind: "claude-code",
       executable: "claude",

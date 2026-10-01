@@ -1,5 +1,5 @@
-// Claude Code PreToolUse hook for Mia's tool gate (see gate.ts): posts the hook input to the gate, waits for Mia's
-// decision, and prints it as the hook's permission decision. It appends each hook input to the evidence file. It never
+// PreToolUse hook for Mia's tool gate (see gate.ts), run by Claude Code and by Codex: posts the hook input to the
+// gate, waits for Mia's decision, and prints it as the hook's permission decision. It appends each hook input to the evidence file. It never
 // lets a call through without Mia: any failure blocks the call (exit code 2), because a hook that merely fails lets
 // the runtime run a tool that needs no permission, such as the manager agent's Task (see the capability record).
 // capability record: https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456
@@ -16,7 +16,7 @@ process.on("uncaughtException", (error) =>
   block(error instanceof Error ? error.message : String(error)),
 );
 
-const { gate, evidence, maxBytes } = new Command()
+const { gate, evidence, maxBytes, allowSilently } = new Command()
   .requiredOption("--gate <url>", "the tool gate to ask")
   .requiredOption("--evidence <file>", "where each hook input is appended")
   .requiredOption(
@@ -24,12 +24,15 @@ const { gate, evidence, maxBytes } = new Command()
     "the most hook input it reads: past this the call is blocked rather than buffered",
     (value) => Number.parseInt(value, 10),
   )
+  // Codex 0.159.3 accepts only a deny decision and fails a hook that prints allow (it then runs the call anyway), so
+  // under Codex an allowed call prints nothing, which it reads as no objection.
+  .option("--allow-silently", "print no decision for an allowed call", false)
   .exitOverride(() => block("the hook was started without its gate"))
   .parse()
   .opts();
 
-// Claude Code starts each hook in a process group of its own, so killing the runtime's group leaves this hook running.
-// Once the runtime is gone (this process is re-parented), the call it asked about can no longer run: stop waiting,
+// Claude Code and Codex (0.159.3) start each hook in a process group of its own, so killing the runtime's group leaves
+// this hook running. Once the runtime is gone (this process is re-parented), the call it asked about can no longer run: stop waiting,
 // which closes the request, so Mia sees the held call abandoned.
 const runtimePid = process.ppid;
 setInterval(() => {
@@ -37,6 +40,7 @@ setInterval(() => {
 }, 250).unref();
 
 const decide = (decision, reason) => {
+  if (decision === "allow" && allowSilently) process.exit(0);
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

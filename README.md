@@ -36,7 +36,8 @@ which is ignored). Every profile states:
 - `runtime.model` / `runtime.effort`: passed explicitly on every invocation (`--model`, `--effort`). The Opus example is
   marked **unverified** because the capability record was produced on `claude-sonnet-5`; run the probe with
   `--model claude-opus-5` before relying on it.
-- `runtime.mcpServers`: the MCP servers the agent may use. `mia_approval` is reserved for the approval bridge.
+- `runtime.mcpServers`: the MCP servers the agent may use. Under Claude Code, `mia_approval` is reserved for the
+  approval bridge.
 - `runtime.toolPolicy`: one entry per tool, `allow` (no prompt, still gated during interruption), `ask` (explicit
   per-call decision) or `deny`. Tools not listed are denied with a visible error.
 - `runtime.agentPromptFile` / `runtime.workerAgent`: the manager agent's prompt (e.g. `prompts/manager-v2.md`), and the
@@ -83,6 +84,8 @@ at `MIA_LIVE_CALL_CAP` (default 50), and write their results under `.mia-state/`
 | `packages/kernel`              | dependency-free commit-first kernel: decide, commit, apply, perform; committed-change feed; held replies     |
 | `packages/agent-adapter`       | runtime-neutral session contract, profile loading, tool gate and its hook, runtime launch files, live budget |
 | `packages/claude-code-adapter` | Claude Code adapter: session plan, stream-json translation, approval bridge, static probe                    |
+| `packages/codex-adapter`       | Codex adapter: `codex app-server` session, Mia's Codex home, JSON-RPC translation, static probe              |
+| `packages/runtimes`            | picks the adapter a profile's `runtime.kind` names, for the server and the probe                             |
 | `packages/records`             | SQLite catalog, content-addressed objects, record writer, snapshot queries, export/verify, HTML report       |
 | `packages/mcp-http`            | loopback Streamable-HTTP host used by the fixture and the bridge                                             |
 | `fixtures/controlled-mcp`      | controlled MCP fixture with append-only ledger and barriers                                                  |

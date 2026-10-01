@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { errorMessage, redactString, type RuntimeCancellation } from "@mia/protocol";
-import { untilAborted } from "@mia/agent-adapter";
-import type { SessionPlan } from "./launch.ts";
-import type { RuntimeEvent } from "@mia/agent-adapter";
-import { parseStreamLine, redactLine, type RuntimeMessage } from "./stream.ts";
+import { untilAborted } from "./deadline.ts";
+import type { RuntimeEvent } from "./runtime-events.ts";
+import type { LaunchDescription, SessionResult } from "./session.ts";
 import { retainStdout } from "./transcript.ts";
 
 export interface RuntimeExit {
@@ -30,9 +29,9 @@ export interface RuntimeProcess {
 }
 
 /**
- * Spawns the runtime and follows it: retains its stdout as the transcript, parses each line and hands its message
- * to `onMessage` one at a time in stdout order (a malformed line becomes a `malformed_event`), forwards stderr, and
- * reports the spawn. Returns the reason instead when the process cannot even be created.
+ * Spawns a runtime and follows it: hands each stdout line to `handleLine` one at a time in stdout order and retains
+ * the text it returns as the transcript, forwards stderr, and reports the spawn. Returns the reason instead when the
+ * process cannot even be created. Each adapter parses its own runtime's lines; this owns only the process.
  */
 export const spawnRuntime = (input: {
   command: string;
@@ -40,8 +39,9 @@ export const spawnRuntime = (input: {
   cwd: string;
   env: Record<string, string>;
   streamLogPath: string;
-  launch: SessionPlan["description"];
-  onMessage: (message: RuntimeMessage) => Promise<void>;
+  launch: LaunchDescription;
+  /** Handles one stdout line; resolves to its redacted text to retain, or null to retain nothing. */
+  handleLine: (line: string) => Promise<string | null>;
   emit: (event: RuntimeEvent) => Promise<void>;
 }): RuntimeProcess | { spawnFailed: string } => {
   const now = () => new Date().toISOString();
@@ -75,21 +75,6 @@ export const spawnRuntime = (input: {
   });
   child.stdin?.on("error", () => undefined);
 
-  /** Hands over one stdout line's message, once the last is handled; returns the line's redacted text. */
-  const handleLine = async (line: string): Promise<string | null> => {
-    const parsed = parseStreamLine(line);
-    if (!parsed) return null;
-    const retained = redactLine(parsed);
-    if (parsed.ok) await input.onMessage(parsed.message);
-    else
-      await emit({
-        type: "malformed_event",
-        raw: retained.slice(0, 2000),
-        error: parsed.error,
-        at: now(),
-      });
-    return retained;
-  };
   const signalGroup = (): void => {
     try {
       if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -104,7 +89,7 @@ export const spawnRuntime = (input: {
     ? retainStdout({
         stdout: child.stdout,
         file: input.streamLogPath,
-        handleLine,
+        handleLine: input.handleLine,
         signal: stopReading.signal,
         reportFailure: (error) =>
           report({
@@ -166,5 +151,30 @@ export const spawnRuntime = (input: {
       exitSettled.resolve({ code: null, signal: null });
       return "unknown";
     },
+  };
+};
+
+/**
+ * A session's result from how its runtime process ended: killed when `stop` ended it, failed with `failure` when the
+ * adapter gave up on it, with its process error, or with a non-zero exit, and ended on a clean exit.
+ */
+export const sessionResultOf = (input: {
+  exit: RuntimeExit;
+  cancellation: RuntimeCancellation;
+  stopped: boolean;
+  failure: string | null;
+  spawnError: string | null;
+  files: Pick<SessionResult, "streamLogPath" | "hookEvidencePath" | "launch">;
+}): SessionResult => {
+  const ended = { ...input.files, exit: input.exit, cancellation: input.cancellation };
+  if (input.stopped) return { ...ended, status: "killed", error: null };
+  if (input.failure !== null) return { ...ended, status: "failed", error: input.failure };
+  if (input.spawnError !== null)
+    return { ...ended, status: "failed", error: `runtime process error: ${input.spawnError}` };
+  if (input.exit.code === 0) return { ...ended, status: "ended", error: null };
+  return {
+    ...ended,
+    status: "failed",
+    error: `runtime exited with code ${input.exit.code} signal ${input.exit.signal}`,
   };
 };

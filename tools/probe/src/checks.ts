@@ -133,7 +133,7 @@ export const workerStopChecks = (
     task_stop_passed_gate_as_manager_call: session.gate_requests.some(
       (entry) => entry.request.toolName === "TaskStop" && entry.request.agentId === null,
     ),
-    worker_end_status: ended?.status ?? "no end reported",
+    worker_end_status: ended?.runtimeStatus ?? "no end reported",
     in_flight_call_left_running_after_stop: observed.pendingAfterStop,
     in_flight_call_cancelled: ledger.some(
       (entry) => entry.tool === "slow" && entry.kind === "cancelled",

@@ -6,7 +6,13 @@ export {
   runtimeMcpServer,
   validateRuntimeConfig,
 } from "./config.ts";
-export type { McpServerConfig, RuntimeConfig, RuntimeKind } from "./config.ts";
+export type {
+  ClaudeCodeConfig,
+  CodexConfig,
+  McpServerConfig,
+  RuntimeConfig,
+  RuntimeKind,
+} from "./config.ts";
 export { bodyLogServersIn, serverBodyLog, toolContracts } from "./tool-contracts.ts";
 export type {
   BodyLogServers,
@@ -17,6 +23,7 @@ export type {
 export { loadProfileSync, ProfileSchema } from "./profile.ts";
 export type { Profile } from "./profile.ts";
 export {
+  DELEGATE_TOOL,
   isManagerTool,
   MANAGER_TOOLS,
   readManagerCall,
@@ -24,7 +31,7 @@ export {
   WORKER_AGENT_NAME,
 } from "./manager-tools.ts";
 export type { ManagerCall } from "./manager-tools.ts";
-export { GATE_HOOK_PATH, MAX_GATE_PAYLOAD_BYTES, ToolGate } from "./gate.ts";
+export { gateHookCommand, ToolGate } from "./gate.ts";
 export type { GateDecision, GateHandler, GateRequest } from "./gate.ts";
 export type {
   AgentRuntime,
@@ -49,7 +56,17 @@ export type {
   SessionEvent,
   TaskEvent,
   TurnSummary,
+  WorkerEnd,
 } from "./runtime-events.ts";
+export { sessionResultOf, spawnRuntime } from "./runtime-process.ts";
+export type { RuntimeExit, RuntimeProcess } from "./runtime-process.ts";
 export { LiveCallBudget } from "./budget.ts";
 export { untilAborted } from "./deadline.ts";
-export { resolveExecutableSync } from "./resolve-executable.ts";
+export {
+  overlaidEnvironment,
+  probeExecutableSync,
+  resolveExecutableSync,
+} from "./resolve-executable.ts";
+export type { ExecutableProbe } from "./resolve-executable.ts";
+export { readJsonLine, redactJsonLine } from "./json-line.ts";
+export type { JsonLine } from "./json-line.ts";

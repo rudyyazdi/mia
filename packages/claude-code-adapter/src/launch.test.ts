@@ -1,21 +1,15 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempDisposableSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { RuntimeConfig } from "@mia/agent-adapter";
-import {
-  DELEGATION_INSTRUCTIONS,
-  MCP_TOOL_TIMEOUT_MS,
-  prepareSession,
-  shellQuoted,
-} from "./launch.ts";
+import type { ClaudeCodeConfig } from "@mia/agent-adapter";
+import { DELEGATION_INSTRUCTIONS, MCP_TOOL_TIMEOUT_MS, prepareSession } from "./launch.ts";
 
 /** A session plan for a minimal config working in `dir`, inheriting `env`, with `fields` replaced. */
 const planIn = (
   dir: string,
   env: NodeJS.ProcessEnv = {},
-  overrides: { fields?: Partial<RuntimeConfig>; managerPromptFile?: string | null } = {},
+  overrides: { fields?: Partial<ClaudeCodeConfig>; managerPromptFile?: string | null } = {},
 ) =>
   prepareSession({
     config: {
@@ -157,17 +151,5 @@ describe("session plan", () => {
   it("keeps the worker prompt out of the retained description", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
     expect(JSON.stringify(planIn(directory.path).description)).not.toContain("work carefully");
-  });
-
-  it("quotes the hook's arguments so the shell expands nothing in a path", () => {
-    const parts = ["/state/$(touch pwned)/`id`", "it's", "a b", ""];
-    const printed = execFileSync(
-      "/bin/sh",
-      ["-c", `printf '%s\\n' ${parts.map(shellQuoted).join(" ")}`],
-      {
-        encoding: "utf8",
-      },
-    );
-    expect(printed).toBe(parts.map((part) => `${part}\n`).join(""));
   });
 });

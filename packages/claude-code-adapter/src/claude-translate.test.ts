@@ -1,6 +1,6 @@
 import { REDACTED } from "@mia/protocol";
 import { describe, expect, it } from "vitest";
-import { ClaudeTranslator, taskEventsOf } from "./claude-translate.ts";
+import { ClaudeTranslator, taskEventsOf, workerEndOf } from "./claude-translate.ts";
 import { parseStreamLine, type RuntimeMessage } from "./stream.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -187,12 +187,26 @@ describe("taskEventsOf", () => {
         type: "worker_ended",
         runtimeTaskId: "a1",
         delegationCallId: "toolu_delegation",
-        status: "completed",
+        end: "completed",
+        runtimeStatus: "completed",
         summary: "read 0",
         at,
       },
     ]);
   });
+
+  it.each([
+    ["completed", "completed"],
+    ["stopped", "stopped"],
+    ["killed", "stopped"],
+    ["failed", "failed"],
+    ["paused", "failed"],
+  ] as const)(
+    "maps Claude Code's end word %s to %s, a word it does not know to failed",
+    (word, end) => {
+      expect(workerEndOf(word)).toBe(end);
+    },
+  );
 
   it("reports nothing for other messages, including task progress", () => {
     expect(taskEventsOf(message(init), now)).toEqual([]);

@@ -531,7 +531,8 @@ export class Engine implements CommandEngine {
           ...drawn,
           kind: "worker_ended",
           runtimeTaskId: ended.runtimeTaskId,
-          status: ended.status,
+          end: ended.end,
+          runtimeStatus: ended.runtimeStatus,
           summary: ended.summary,
         });
       })

@@ -1,19 +1,16 @@
 import { join, resolve } from "node:path";
 import {
-  GATE_HOOK_PATH,
+  gateHookCommand,
   MANAGER_TOOLS,
-  MAX_GATE_PAYLOAD_BYTES,
+  overlaidEnvironment,
   runtimeMcpServer,
   STOP_TOOL,
   WORKER_AGENT_NAME,
   type LaunchDescription,
   type LaunchSetup,
-  type RuntimeConfig,
+  type ClaudeCodeConfig,
 } from "@mia/agent-adapter";
 import { BRIDGE_SERVER_NAME, BRIDGE_TOOL_IDENTITY } from "./bridge.ts";
-
-/** One argument of the hook's shell command, single-quoted so the shell expands nothing in it (`$()`, backticks). */
-export const shellQuoted = (part: string): string => `'${part.replaceAll("'", `'\\''`)}'`;
 
 /** How long the gate hook may hold a call, in seconds (the runtime's unit for hooks): as long as a held approval. */
 const GATE_HOOK_TIMEOUT_S = 24 * 60 * 60;
@@ -26,12 +23,10 @@ export const MCP_TOOL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  * settings. The session and the startup probe both use it, so the probe finds and runs the same executable.
  */
 export const runtimeEnvironment = (
-  config: RuntimeConfig,
+  config: ClaudeCodeConfig,
   env: NodeJS.ProcessEnv,
 ): Record<string, string> => {
-  const merged: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) if (value !== undefined) merged[name] = value;
-  Object.assign(merged, config.env);
+  const merged = overlaidEnvironment(env, config.env);
   merged.MCP_TOOL_TIMEOUT = String(MCP_TOOL_TIMEOUT_MS);
   // Claude Code 2.1.278 adds a separate idle timeout: a call with "no response or progress" for 300s is aborted. A held
   // approval prompt is exactly that, so it gets the same 24h (capability record F4). 0 would disable it entirely.
@@ -43,7 +38,7 @@ export const runtimeEnvironment = (
 };
 
 /** The MCP servers the runtime gets: the profile's, without the fields only Mia reads, and the approval bridge. */
-const mcpConfigOf = (config: RuntimeConfig, bridgeUrl: string) => ({
+const mcpConfigOf = (config: ClaudeCodeConfig, bridgeUrl: string) => ({
   mcpServers: {
     ...Object.fromEntries(
       Object.entries(config.mcpServers).map(([name, server]) => [name, runtimeMcpServer(server)]),
@@ -59,13 +54,13 @@ const jsonFile = (path: string, value: unknown) => ({
 });
 
 /** The tools the runtime refuses by rule before any hook or prompt: every tool whose policy is deny. */
-const denyRulesOf = (config: RuntimeConfig): string[] =>
+const denyRulesOf = (config: ClaudeCodeConfig): string[] =>
   Object.entries(config.toolPolicy)
     .filter(([, policy]) => policy === "deny")
     .map(([identity]) => identity);
 
 export interface SessionInput {
-  config: RuntimeConfig;
+  config: ClaudeCodeConfig;
   runtimeDir: string;
   /** The approval bridge, the session's prompt tool: a backstop that denies any call the hook left undecided. */
   bridgeUrl: string;
@@ -143,18 +138,11 @@ export const prepareSession = (input: SessionInput): SessionPlan => {
           hooks: [
             {
               type: "command",
-              command: [
-                process.execPath,
-                GATE_HOOK_PATH,
-                "--gate",
-                input.gateUrl,
-                "--evidence",
-                hookEvidence,
-                "--max-bytes",
-                String(MAX_GATE_PAYLOAD_BYTES),
-              ]
-                .map(shellQuoted)
-                .join(" "),
+              command: gateHookCommand({
+                gateUrl: input.gateUrl,
+                evidence: hookEvidence,
+                allowSilently: false,
+              }),
               timeout: GATE_HOOK_TIMEOUT_S,
             },
           ],

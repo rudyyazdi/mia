@@ -6,6 +6,7 @@ import type {
   SessionOptions,
   SessionResult,
   SessionRunner,
+  WorkerEnd,
 } from "@mia/agent-adapter";
 import type { RuntimeCancellation } from "@mia/protocol";
 
@@ -142,13 +143,14 @@ export class ScriptedSession {
     return decision;
   }
 
-  endWorker(runtimeTaskId: string, status = "completed"): Promise<void> {
+  endWorker(runtimeTaskId: string, end: WorkerEnd = "completed"): Promise<void> {
     return this.emit({
       type: "worker_ended",
       runtimeTaskId,
       delegationCallId: `toolu_delegate_${runtimeTaskId}`,
-      status,
-      summary: `${runtimeTaskId} ${status}`,
+      end,
+      runtimeStatus: end,
+      summary: `${runtimeTaskId} ${end}`,
       at: at(),
     });
   }

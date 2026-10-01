@@ -5,12 +5,5 @@
   "threshold": 0,
   "reporters": ["console"],
   "gitignore": true,
-  "ignore": [
-    "**/node_modules/**",
-    "**/dist/**",
-    ".claude/worktrees/**",
-    ".mia-work/**",
-    ".mia-state/**",
-    "tests/acceptance/promptfoo/output/**"
-  ]
+  "ignore": ["**/node_modules/**", ".mia-work/**", ".mia-state/**"]
 }

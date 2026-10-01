@@ -264,14 +264,7 @@ const NO_EXPORT_ALL = {
 
 export default tseslint.config(
   {
-    ignores: [
-      "node_modules/",
-      "dist/",
-      "**/node_modules/",
-      ".mia-work/",
-      ".mia-state/",
-      "tests/acceptance/promptfoo/output/",
-    ],
+    ignores: ["node_modules/", "**/node_modules/", ".mia-work/", ".mia-state/"],
   },
   {
     // Every linted file, whatever its extension: a bypass names the rules it silences and says why.

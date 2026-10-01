@@ -1,5 +1,4 @@
 node_modules/
-dist/
 *.tsbuildinfo
 *.log
 .env
@@ -10,8 +9,3 @@ dist/
 exports/
 # local configuration (use examples/config/*.json as templates)
 config/*.local.json
-# promptfoo outputs
-tests/acceptance/promptfoo/output/
-.promptfoo/
-# agent worktrees: whole copies of this tree, checked out inside it
-.claude/worktrees/

@@ -66,6 +66,12 @@ export type RuntimeEvent =
   | { type: "runtime_exit"; code: number | null; signal: NodeJS.Signals | null; at: string };
 
 /**
+ * How a worker agent ended, in Mia's words: each adapter maps its runtime's own word onto one of these, and a word it
+ * does not know is `failed`.
+ */
+export type WorkerEnd = "completed" | "failed" | "stopped";
+
+/**
  * What a manager agent's session reports besides a turn's events: the runtime's own record of each worker agent
  * it starts and ends. `runtimeTaskId` is the id the gate hook also reports as the worker agent's `agent_id`, and
  * `delegationCallId` is the manager agent's delegation call that started it.
@@ -84,9 +90,11 @@ export type TaskEvent =
       type: "worker_ended";
       runtimeTaskId: string;
       delegationCallId: string | null;
-      /** The runtime's own word for how it ended, e.g. "completed", "failed" or "stopped". */
-      // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, kept as reported; the engine maps it
-      status: string;
+      /** How it ended, mapped from the runtime's own word by its adapter. */
+      end: WorkerEnd;
+      /** The runtime's own word for how it ended, kept as evidence and never decided on. */
+      // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, kept as reported; `end` is its meaning
+      runtimeStatus: string;
       summary: string | null;
       at: string;
     };

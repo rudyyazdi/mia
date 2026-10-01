@@ -94,7 +94,8 @@ describe("workerBackgroundChecks", () => {
     type: "worker_ended",
     runtimeTaskId: "a1",
     delegationCallId: "toolu_delegation",
-    status: "completed",
+    end: "completed",
+    runtimeStatus: "completed",
     summary: null,
     at,
   };

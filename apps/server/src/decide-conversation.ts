@@ -8,6 +8,7 @@ import {
   type RuntimeInit,
   type RuntimeKind,
   type TurnSummary,
+  type WorkerEnd,
 } from "@mia/agent-adapter";
 import type { Decide, Decision as MachineDecision } from "@mia/kernel";
 import {
@@ -130,8 +131,10 @@ export interface WorkerStartedEvent extends Drawn {
 export interface WorkerEndedEvent extends Drawn {
   kind: "worker_ended";
   runtimeTaskId: string;
-  // eslint-disable-next-line no-restricted-syntax -- the runtime's own word for how it ended, mapped by `endedStatus`
-  status: string;
+  end: WorkerEnd;
+  /** The runtime's own word for how it ended, recorded as evidence. */
+  // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, recorded as reported; `end` is decided on
+  runtimeStatus: string;
   summary: string | null;
 }
 
@@ -661,12 +664,15 @@ const workerStarted = (state: ConversationState, event: WorkerStartedEvent, now:
   return draft.accepted();
 };
 
-/** The task status a worker agent's end leaves, from the runtime's own word for it. */
-// eslint-disable-next-line no-restricted-syntax -- the runtime's own word for a worker agent's end, mapped here
-const endedStatus = (runtimeStatus: string, stopped: boolean): TaskStatus => {
-  if (stopped || runtimeStatus === "stopped" || runtimeStatus === "killed") return "interrupted";
-  return runtimeStatus === "completed" ? "completed" : "failed";
-};
+/** The task status a worker agent's end leaves: interrupted whenever its task was being stopped. */
+const endedStatus = (end: WorkerEnd, stopped: boolean): TaskStatus =>
+  stopped
+    ? "interrupted"
+    : match(end)
+        .with("completed", (): TaskStatus => "completed")
+        .with("failed", (): TaskStatus => "failed")
+        .with("stopped", (): TaskStatus => "interrupted")
+        .exhaustive();
 
 const EXECUTION_STATUS: Record<TaskStatus, ExecutionStatus> = {
   running: "running",
@@ -788,11 +794,16 @@ const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Dat
   const draft = draftFor(state, event, now);
   draft.record(
     "worker_ended",
-    { runtime_task_id: event.runtimeTaskId, status: event.status, summary: event.summary },
+    {
+      runtime_task_id: event.runtimeTaskId,
+      end: event.end,
+      status: event.runtimeStatus,
+      summary: event.summary,
+    },
     { ...workerLinks(task), id: draft.id("evt") },
   );
   endTask(draft, task, {
-    status: endedStatus(event.status, !task.gateOpen),
+    status: endedStatus(event.end, !task.gateOpen),
     stopped: !task.gateOpen,
     runtimeGone: false,
     cancellation: "not_needed",

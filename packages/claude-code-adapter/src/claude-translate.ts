@@ -1,7 +1,13 @@
 import { match } from "ts-pattern";
 import { z } from "zod";
 import { redactString, redactValue } from "@mia/protocol";
-import type { RuntimeEvent, RuntimeInit, TaskEvent, TurnSummary } from "@mia/agent-adapter";
+import type {
+  RuntimeEvent,
+  RuntimeInit,
+  TaskEvent,
+  TurnSummary,
+  WorkerEnd,
+} from "@mia/agent-adapter";
 import {
   InitMessageSchema,
   type InitMessage,
@@ -147,10 +153,21 @@ const WorkerEndedSchema = z.looseObject({
   subtype: z.literal("task_notification"),
   task_id: z.string(),
   tool_use_id: z.string().optional(),
-  // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, kept as reported; the engine maps it
+  // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, kept as reported; `workerEndOf` maps it
   status: z.string(),
   summary: z.string().optional(),
 });
+
+/**
+ * How a subagent ended, from Claude Code's word for it in a `task_notification`: `stopped` when TaskStop or a kill
+ * ended it, and any word it is not known to use is a failure.
+ */
+// eslint-disable-next-line no-restricted-syntax -- Claude Code's own word for a subagent's end, mapped here once
+export const workerEndOf = (status: string): WorkerEnd => {
+  if (status === "completed") return "completed";
+  if (status === "stopped" || status === "killed") return "stopped";
+  return "failed";
+};
 
 /**
  * The worker-agent events one runtime message carries: Claude Code reports a subagent's start as a `task_started`
@@ -178,7 +195,8 @@ export const taskEventsOf = (message: RuntimeMessage, now: () => string): TaskEv
         type: "worker_ended",
         runtimeTaskId: ended.data.task_id,
         delegationCallId: ended.data.tool_use_id ?? null,
-        status: ended.data.status,
+        end: workerEndOf(ended.data.status),
+        runtimeStatus: ended.data.status,
         summary: ended.data.summary === undefined ? null : redactString(ended.data.summary),
         at: now(),
       },

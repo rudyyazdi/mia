@@ -118,20 +118,28 @@ export const workerGateChecks = (session: SessionRecord): Checks => {
 };
 
 /**
- * A worker agent's call of a policy-denied tool: it was attempted (proposed on the stream, or asked at the gate),
- * every gate decision on it was a denial, and it never ran.
+ * Where the policy stopped a worker agent's call of a denied tool: the gate denied it (Codex), the runtime refused a
+ * call it streamed, or the runtime never offered the tool at all (Claude Code's deny rule hides it from the worker).
  */
+const deniedBy = (session: SessionRecord): string => {
+  if (gateRequestsFor(session, "forbidden").length > 0) return "gate";
+  return proposalsOf(session).some(
+    (proposal) => proposal.toolIdentity === "mcp__fixture__forbidden",
+  )
+    ? "runtime rule (proposed, never reached the gate)"
+    : "runtime rule (tool withheld from the worker agent)";
+};
+
+/** A worker agent asked to call a policy-denied tool: every gate decision on it was a denial, and it never ran. */
 export const workerDenyChecks = (session: SessionRecord): Checks => {
   const asked = gateRequestsFor(session, "forbidden");
   return {
-    worker_attempted_denied_call:
-      asked.length > 0 ||
-      proposalsOf(session).some((proposal) => proposal.toolIdentity === "mcp__fixture__forbidden"),
-    denied_by: asked.length > 0 ? "gate" : "runtime rule (never reached the gate)",
+    denied_by: deniedBy(session),
     gate_denied_every_ask: asked.every((entry) => entry.decision.behavior === "deny"),
     denied_call_never_ran: fixtureRunsOf(session, "forbidden") === 0,
-    every_fixture_call_attributed_to_a_worker:
-      asked.length === 0 || asked.every((entry) => entry.request.agentId !== null),
+    every_denied_call_attributed_to_a_worker: asked.every(
+      (entry) => entry.request.agentId !== null,
+    ),
   };
 };
 

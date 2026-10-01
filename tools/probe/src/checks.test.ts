@@ -149,14 +149,12 @@ describe("workerDenyChecks", () => {
     at,
   };
 
-  it("counts a call a runtime rule refused before the gate as attempted", () => {
-    expect(workerDenyChecks(session({ events: [started, forbiddenProposal] }))).toMatchObject({
-      worker_attempted_denied_call: true,
-      denied_by: "runtime rule (never reached the gate)",
-      denied_call_never_ran: true,
-    });
-    expect(workerDenyChecks(session({ events: [started] })).worker_attempted_denied_call).toBe(
-      false,
+  it("tells a call the runtime refused from a tool it withheld", () => {
+    expect(workerDenyChecks(session({ events: [started, forbiddenProposal] })).denied_by).toBe(
+      "runtime rule (proposed, never reached the gate)",
+    );
+    expect(workerDenyChecks(session({ events: [started] })).denied_by).toBe(
+      "runtime rule (tool withheld from the worker agent)",
     );
   });
 

@@ -74,8 +74,8 @@ export const workerGate = async (context: ProbeContext): Promise<void> => {
 };
 
 /**
- * A worker agent's call of a tool the policy denies: Claude Code refuses it by rule before the hook, and on a runtime
- * without such a rule the gate denies it (see `runSession`). Either way it never runs.
+ * A worker agent asked to call a tool the policy denies: Claude Code's deny rule withholds the tool from it, and on a
+ * runtime without such a rule the gate denies the call (see `runSession`). Either way it never runs.
  */
 export const workerDeny = async (context: ProbeContext): Promise<void> => {
   await context.harness.reset();

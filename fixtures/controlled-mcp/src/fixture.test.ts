@@ -175,6 +175,17 @@ describe("controlled fixture", () => {
     await expect(harness.state()).resolves.toHaveProperty("counter");
   });
 
+  it("starts a reset's ledger empty even when it releases a slow call left at its barrier", async () => {
+    await harness.reset();
+    const mcpClient = await client();
+    const call = mcpClient.callTool({ name: "slow", arguments: { mode: "uncancellable" } });
+    call.catch(() => undefined);
+    await harness.waitEntered();
+    await harness.reset();
+    expect(await harness.state()).toMatchObject({ counter: 0, ledger: [], pending: [] });
+    await mcpClient.close();
+  });
+
   it("slow uncancellable survives disconnection and commits on release", async () => {
     await harness.reset();
     const mcpClient = await client();

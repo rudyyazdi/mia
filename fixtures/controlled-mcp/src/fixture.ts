@@ -75,7 +75,12 @@ const WAIT_ENTERED_POLL_MS = 60_000;
 const NOTHING_ENTERED = "no slow call entered before timeout";
 const NothingEnteredSchema = z.object({ error: z.literal(NOTHING_ENTERED) });
 
-type ControlledSlowCall = PendingSlowCall & { release: () => void; cancel: () => void };
+type ControlledSlowCall = PendingSlowCall & {
+  release: () => void;
+  cancel: () => void;
+  /** Settles once the call has written its outcome to the ledger. */
+  settled: Promise<void>;
+};
 
 /**
  * Controlled MCP fixture: tools read / change / slow / artifact / forbidden.
@@ -152,7 +157,9 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         const { promise: outcomePromise, resolve: resolveOutcome } = Promise.withResolvers<
           "released" | "cancelled"
         >();
+        const written = Promise.withResolvers<undefined>();
         const call: ControlledSlowCall = {
+          settled: written.promise,
           call_id: id,
           mode,
           entered_at: new Date().toISOString(),
@@ -179,6 +186,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         if (outcome === "cancelled") {
           ledger.append({ kind: "cancelled", tool: "slow", callId: id, args: { mode } });
           pending.delete(id);
+          written.resolve(undefined);
           return { isError: true, content: [{ type: "text", text: "cancelled before commit" }] };
         }
         const value = ledger.increment(1);
@@ -191,6 +199,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         });
         pending.delete(id);
         ledger.append({ kind: "returned", tool: "slow", callId: id, args: { mode } });
+        written.resolve(undefined);
         return { content: [{ type: "text", text: JSON.stringify({ counter: value }) }] };
       },
     );
@@ -282,7 +291,11 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
     const url = new URL(req.url ?? "/", `http://${host}`);
     if (req.method === "GET" && url.pathname === "/state") return sendJson(res, 200, snapshot());
     if (req.method === "POST" && url.pathname === "/reset") {
-      for (const call of pending.values()) call.release();
+      // A call left at its barrier by an earlier run is released and allowed to write its outcome first, so nothing
+      // it writes lands in the ledger the reset starts.
+      const left = [...pending.values()];
+      for (const call of left) call.release();
+      await Promise.all(left.map((call) => call.settled));
       pending.clear();
       ledger.reset();
       return sendJson(res, 200, { ok: true });

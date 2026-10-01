@@ -1,6 +1,6 @@
 # D1 implementation plan: prove one agent adapter
 
-Implemented (see [capability record](CAPABILITY-RECORD.md) and [acceptance record](ACCEPTANCE-RECORD.md)); awaiting the maintainer acceptance checkpoint. Expands [D1](../PLAN.md#deliverable-1--prove-one-agent-adapter); parent requirements remain authoritative. See [tests](TEST-PLAN.md) and [records](CONVERSATION-RECORDS.md).
+Implemented (see [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456) and [acceptance record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737705)); awaiting the maintainer acceptance checkpoint. Expands [D1](../PLAN.md#deliverable-1--prove-one-agent-adapter); parent requirements remain authoritative. See [tests](TEST-PLAN.md) and [records](CONVERSATION-RECORDS.md).
 
 ## Outcome and scope
 

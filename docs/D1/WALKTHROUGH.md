@@ -224,4 +224,4 @@ sqlite3 .mia-state/fixture-test/catalog.sqlite "select role, availability, versi
 
 Run `npm run probe` (about 7 live turns). It re-checks the permission payload shape, streaming, resume, effort
 precedence and the SIGTERM/SIGKILL behaviour, and rewrites `docs/D1/protocol-examples/`. Compare against
-`CAPABILITY-RECORD.md`.
+the [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456).

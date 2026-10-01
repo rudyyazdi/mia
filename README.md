@@ -6,7 +6,7 @@ with honest outcomes, and a private, exportable conversation record, plus **Deli
 blocks and delegates every tool call to worker agents, enabled by a profile's `runtime.workerAgent`. Later deliverables, including promoting the text client to the TUI, voice, views and
 phone clients, are described in [`docs/PLAN.md`](docs/PLAN.md) and are not implemented yet.
 
-Read first: [glossary](docs/GLOSSARY.md), [D1 plan](docs/D1/PLAN.md), [capability record](docs/D1/CAPABILITY-RECORD.md), [acceptance record](docs/D1/ACCEPTANCE-RECORD.md).
+Read first: [glossary](docs/GLOSSARY.md), [D1 plan](docs/D1/PLAN.md), [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456), [D1 acceptance record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737705).
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ which is ignored). Every profile states:
 - `runtime.workerAgent` (D2, optional): the worker agent's `description` and `promptFile`. With it, the server runs a
   manager agent (`agentPromptFile`, e.g. `prompts/manager-v1.md`) that delegates every tool call to worker agents, and
   `runtime.exclusiveTools` names tools only one worker agent may use at a time. See
-  `examples/config/fixture-test-delegation.json` and the capability record's D2 addendum for how calls are gated.
+  `examples/config/fixture-test-delegation.json` and the [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456)'s D2 addendum for how calls are gated.
 
 ## Run
 

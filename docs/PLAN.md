@@ -64,7 +64,9 @@ Terms are defined in the [glossary](GLOSSARY.md).
 
 ## Delivery approach
 
-Each deliverable extends a working user journey. Provide one repeatable demo with expected results and test relevant failure cases as soon as the capability appears. Keep an acceptance record identifying each requirement as demonstrated live, verified with a test substitute, or blocked. Missing required capabilities block acceptance; a substitute is not a live pass.
+Deliverables are sequential checkpoints: the maintainer confirms each before the next begins. Each builds on the last by changing it, removing any code the new one no longer needs. Earlier journeys are re-run on the new code; acceptance evidence is attached to the deliverable's pull request, not kept in the repository.
+
+Each deliverable extends a working user journey. Provide one repeatable demo with expected results and test relevant failure cases as soon as the capability appears. Its acceptance record identifies each requirement as demonstrated live, verified with a test substitute, or blocked. Missing required capabilities block acceptance; a substitute is not a live pass.
 
 Establish shared agent-adapter checks for approval and interruption in deliverable 1 and repeat them for each runtime. Establish UI-adapter content/event checks in deliverable 5. Re-run relevant earlier journeys as capabilities expand. End-to-end evaluation is continuous, not a final milestone.
 

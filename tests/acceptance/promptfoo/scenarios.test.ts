@@ -64,6 +64,14 @@ describe("live scenario names", () => {
     const reporting = [...ended, at("turn_started", { turn_id: "turn_2" })];
     expect(quietAfter(reporting, 0)).toBe(false);
     expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 0)).toBe(true);
+    // An interrupted task ends with its interruption's outcome.
+    const interrupted = [
+      ...delegated,
+      at("interruption_outcome", { task_id: "task_1" }),
+      at("turn_started", { turn_id: "turn_2" }),
+      at("turn_finished", { turn_id: "turn_2" }),
+    ];
+    expect(quietAfter(interrupted, 0)).toBe(true);
     // A message sent after the conversation went quiet is not settled by the earlier turns.
     expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 5)).toBe(false);
   });

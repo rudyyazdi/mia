@@ -21,6 +21,7 @@ import {
   TurnCauseSchema,
   type Decision,
   type ServerEvent,
+  type TaskStatus,
 } from "@mia/protocol";
 
 export interface ScenarioContext {
@@ -152,20 +153,28 @@ export interface Scenario {
 const commitCount = (state: FixtureState): number =>
   state.ledger.filter((entry) => entry.kind === "committed").length;
 
+/** A task's end: it finished, or the outcome of its interruption. */
+const endOf = (event: ServerEvent): { taskId: string; status: TaskStatus } | null => {
+  if (event.type === "task_finished")
+    return { taskId: event.payload.task_id, status: event.payload.status };
+  if (event.type === "interruption_outcome")
+    return { taskId: event.payload.task_id, status: event.payload.task_status };
+  return null;
+};
+
 /**
  * Whether the conversation went quiet after its first `since` events: a turn ended after them, every task started has
  * ended, and a turn that also ended began after the last task's end, so it was reported.
  */
 export const quietAfter = (events: readonly ServerEvent[], since: number): boolean => {
   const recent = events.slice(since);
-  const lastIndex = (type: ServerEvent["type"]) =>
-    recent.findLastIndex((event) => event.type === type);
-  const ended = new Set(
-    events.flatMap((event) => (event.type === "task_finished" ? [event.payload.task_id] : [])),
-  );
+  const lastIndex = (test: (event: ServerEvent) => boolean) => recent.findLastIndex(test);
+  const ended = new Set(events.flatMap((event) => endOf(event)?.taskId ?? []));
   return (
-    lastIndex("turn_finished") > lastIndex("turn_started") &&
-    lastIndex("turn_started") > lastIndex("task_finished") &&
+    lastIndex((event) => event.type === "turn_finished") >
+      lastIndex((event) => event.type === "turn_started") &&
+    lastIndex((event) => event.type === "turn_started") >
+      lastIndex((event) => endOf(event) !== null) &&
     events.every((event) => event.type !== "task_started" || ended.has(event.payload.task_id))
   );
 };
@@ -341,15 +350,11 @@ const tasksOf = (events: readonly ServerEvent[]): ScenarioEvidence["tasks"] =>
   events.flatMap((event) => {
     if (event.type !== "task_started") return [];
     const taskId = event.payload.task_id;
-    const finished = events.findLast(
-      (ended) => ended.type === "task_finished" && ended.payload.task_id === taskId,
-    );
-    return [
-      {
-        task_id: taskId,
-        status: finished?.type === "task_finished" ? finished.payload.status : "running",
-      },
-    ];
+    const ends = events.flatMap((ended) => {
+      const end = endOf(ended);
+      return end?.taskId === taskId ? [end.status] : [];
+    });
+    return [{ task_id: taskId, status: ends.at(-1) ?? "running" }];
   });
 
 /**

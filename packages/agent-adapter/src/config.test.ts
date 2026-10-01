@@ -4,11 +4,12 @@ import {
   bodyLogFor,
   ConfigurationError,
   policyFor,
+  RuntimeConfigSchema,
   validateRuntimeConfig,
-  type RuntimeConfig,
+  type ClaudeCodeConfig,
 } from "./config.ts";
 
-const validRuntime = (): RuntimeConfig => ({
+const validRuntime = (): ClaudeCodeConfig => ({
   kind: "claude-code",
   executable: "claude",
   model: "fixture",
@@ -38,7 +39,7 @@ describe("policyFor", () => {
 });
 
 describe("bodyLogFor", () => {
-  const withBodyLog = (): RuntimeConfig => ({
+  const withBodyLog = (): ClaudeCodeConfig => ({
     ...validRuntime(),
     mcpServers: {
       fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: "/fixture/bodies.jsonl" },
@@ -64,7 +65,7 @@ describe("validateRuntimeConfig", () => {
     expect(() => validateRuntimeConfig({ ...validRuntime(), env: { LANG: "C" } })).not.toThrow();
   });
 
-  const invalidCases: { name: string; overrides: Partial<RuntimeConfig>; message: string }[] = [
+  const invalidCases: { name: string; overrides: Partial<ClaudeCodeConfig>; message: string }[] = [
     {
       name: "policy for absent server",
       overrides: { toolPolicy: { mcp__missing__read: "allow" } },
@@ -79,14 +80,6 @@ describe("validateRuntimeConfig", () => {
       name: "malformed policy identity",
       overrides: { toolPolicy: { invalid: "ask" } },
       message: "toolPolicy names invalid",
-    },
-    {
-      name: "reserved bridge name",
-      overrides: {
-        mcpServers: { mia_approval: { type: "stdio", command: "fixture", args: [] } },
-        toolPolicy: {},
-      },
-      message: "name is reserved",
     },
     {
       name: "an exclusive tool the policy does not list",
@@ -126,5 +119,26 @@ describe("validateRuntimeConfig", () => {
   ])("rejects %s=%j, which is not a token count", (key, value) => {
     const validate = () => validateRuntimeConfig({ ...validRuntime(), env: { [key]: value } });
     expect(validate).toThrow(`found key ${key}`);
+  });
+});
+
+describe("RuntimeConfigSchema", () => {
+  const issues = (config: unknown): string[] => {
+    const parsed = RuntimeConfigSchema.safeParse(config);
+    return parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+  };
+  const { extraSettings: _, ...common } = validRuntime();
+
+  it("reserves the approval bridge's server name for Claude Code only, which has the bridge", () => {
+    const servers = { mia_approval: { type: "stdio", command: "fixture", args: [] } };
+    const reserved = issues({ ...validRuntime(), mcpServers: servers, toolPolicy: {} });
+    expect(reserved.join()).toContain("reserved for the approval bridge");
+    expect(issues({ ...common, kind: "codex", mcpServers: servers, toolPolicy: {} })).toEqual([]);
+  });
+
+  it("refuses an SSE server for Codex, which has no SSE transport", () => {
+    const servers = { fixture: { type: "sse", url: "http://127.0.0.1:1/sse" } };
+    expect(issues({ ...common, kind: "codex", mcpServers: servers }).join()).toContain("no SSE");
+    expect(issues({ ...validRuntime(), mcpServers: servers })).toEqual([]);
   });
 });

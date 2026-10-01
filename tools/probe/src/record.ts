@@ -1,7 +1,7 @@
 import type {
   GateDecision,
   GateRequest,
-  RuntimeConfig,
+  ClaudeCodeConfig,
   SessionEvent,
   SessionHandle,
   SessionResult,
@@ -65,7 +65,7 @@ export interface DrivenSession {
 
 export interface SessionSpec {
   name: string;
-  config: RuntimeConfig;
+  config: ClaudeCodeConfig;
   /** Run with the open session: send messages, wait on events, and close or stop it. */
   drive: (session: DrivenSession, record: SessionRecord) => Promise<void>;
   decide: GateDecider;

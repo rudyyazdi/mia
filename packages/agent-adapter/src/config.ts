@@ -45,58 +45,89 @@ export const runtimeMcpServer = (server: McpServerConfig): Record<string, unknow
     .exhaustive();
 
 /**
- * Everything the adapter needs to launch the runtime. Nothing here has a default: a profile
- * must state model, effort, tool surface, MCP wiring and per-tool policy explicitly.
+ * What every runtime's configuration holds. Nothing here has a default: a profile must state model, effort, tool
+ * surface, MCP wiring and per-tool policy explicitly.
  */
-export const RuntimeConfigSchema = z
+const runtimeFields = {
+  /** Executable name or absolute path; resolved on PATH at launch. */
+  executable: z.string().min(1),
+  model: z.string().min(1),
+  effort: EffortSchema,
+  /** Agent working directory (created if missing). Never a personal path in committed examples. */
+  workingDirectory: z.string().min(1),
+  mcpServers: z.record(z.string().regex(/^[A-Za-z0-9_-]+$/), McpServerConfigSchema),
+  /**
+   * Mia policy per fully qualified tool identity (mcp__<server>__<tool>).
+   * allow: permitted without prompting, still refused once its task is being stopped.
+   * ask: requires an explicit per-call user decision.
+   * deny: rejected before any prompt.
+   * Tools not listed are denied with a visible error.
+   */
+  toolPolicy: z.record(
+    z.string().regex(/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_.-]+$/),
+    ToolPolicySchema,
+  ),
+  /** Mia-owned manager-agent instructions appended to the runtime's system prompt. */
+  agentPromptFile: z.string().min(1),
+  /**
+   * The worker agent the manager agent delegates every tool call to. It may use every tool the policy lists and
+   * cannot start or stop a worker agent.
+   */
+  workerAgent: z
+    .object({
+      /** When the manager agent should delegate to it, as the runtime shows the manager agent. */
+      description: z.string().min(1),
+      /** Mia-owned worker-agent instructions. */
+      promptFile: z.string().min(1),
+    })
+    .strict(),
+  /**
+   * Tools only one worker agent may use at a time, such as computer use: the engine refuses a second concurrent
+   * call to one. Each must be a tool the policy lists.
+   */
+  exclusiveTools: z.array(z.string()).default([]),
+  /** Directories from which tool-result-declared artifacts may be collected. */
+  outputDirectories: z.array(z.string()),
+  /** Extra environment for the runtime process (never credentials). */
+  env: z.record(z.string(), z.string()).default({}),
+};
+
+/**
+ * The MCP server name Claude Code's approval bridge takes (`--permission-prompt-tool`), so a profile may not use it.
+ * Declared with the Claude Code variant, the only one that has a bridge.
+ */
+const CLAUDE_BRIDGE_SERVER = "mia_approval";
+
+const ClaudeCodeConfigSchema = z
   .object({
     kind: z.literal("claude-code"),
-    /** Executable name or absolute path; resolved on PATH at launch. */
-    executable: z.string().min(1),
-    model: z.string().min(1),
-    effort: EffortSchema,
-    /** Agent working directory (created if missing). Never a personal path in committed examples. */
-    workingDirectory: z.string().min(1),
-    mcpServers: z.record(z.string().regex(/^[A-Za-z0-9_-]+$/), McpServerConfigSchema),
-    /**
-     * Mia policy per fully qualified tool identity (mcp__<server>__<tool>).
-     * allow: permitted without prompting, still refused once its task is being stopped.
-     * ask: requires an explicit per-call user decision.
-     * deny: rejected before any prompt.
-     * Tools not listed are denied with a visible error.
-     */
-    toolPolicy: z.record(
-      z.string().regex(/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_.-]+$/),
-      ToolPolicySchema,
-    ),
-    /** Mia-owned manager-agent instructions appended to the runtime's system prompt. */
-    agentPromptFile: z.string().min(1),
-    /**
-     * The worker agent the manager agent delegates every tool call to. It may use every tool the policy lists and
-     * cannot start or stop a worker agent.
-     */
-    workerAgent: z
-      .object({
-        /** When the manager agent should delegate to it, as the runtime shows the manager agent. */
-        description: z.string().min(1),
-        /** Mia-owned worker-agent instructions. */
-        promptFile: z.string().min(1),
-      })
-      .strict(),
-    /**
-     * Tools only one worker agent may use at a time, such as computer use: the engine refuses a second concurrent
-     * call to one. Each must be a tool the policy lists.
-     */
-    exclusiveTools: z.array(z.string()).default([]),
-    /** Directories from which tool-result-declared artifacts may be collected. */
-    outputDirectories: z.array(z.string()),
-    /** Extra environment for the runtime process (never credentials). */
-    env: z.record(z.string(), z.string()).default({}),
+    ...runtimeFields,
     /** Extra Claude Code settings layer (used by tests to inject conflicting inherited settings). */
     extraSettings: z.record(z.string(), z.unknown()).default({}),
   })
-  .strict();
+  .strict()
+  .refine((config) => !Object.hasOwn(config.mcpServers, CLAUDE_BRIDGE_SERVER), {
+    message: `mcpServers may not define "${CLAUDE_BRIDGE_SERVER}"; that name is reserved for the approval bridge`,
+    path: ["mcpServers"],
+  });
+
+/** Codex reaches a remote MCP server over streamable HTTP only, so a server it gets is stdio or http. */
+const CodexConfigSchema = z
+  .object({ kind: z.literal("codex"), ...runtimeFields })
+  .strict()
+  .refine((config) => Object.values(config.mcpServers).every((server) => server.type !== "sse"), {
+    message: "Codex has no SSE transport; give each MCP server as http (streamable HTTP) or stdio",
+    path: ["mcpServers"],
+  });
+
+/** Everything an adapter needs to launch its runtime, by the runtime a profile runs (`kind`). */
+export const RuntimeConfigSchema = z.discriminatedUnion("kind", [
+  ClaudeCodeConfigSchema,
+  CodexConfigSchema,
+]);
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
+export type ClaudeCodeConfig = z.infer<typeof ClaudeCodeConfigSchema>;
+export type CodexConfig = z.infer<typeof CodexConfigSchema>;
 /** Which agent runtime a profile runs, named once by its configuration's `kind`. */
 export type RuntimeKind = RuntimeConfig["kind"];
 
@@ -149,11 +180,6 @@ export const validateRuntimeConfig = (config: RuntimeConfig): void => {
       throw new ConfigurationError(
         `exclusiveTools names ${identity}, which toolPolicy does not list`,
       );
-  }
-  if (Object.hasOwn(config.mcpServers, "mia_approval")) {
-    throw new ConfigurationError(
-      `mcpServers may not define "mia_approval"; that name is reserved for the approval bridge`,
-    );
   }
   for (const [key, value] of Object.entries(config.env)) {
     if (isSensitiveKey(key) && !isTokenCount(key, value))

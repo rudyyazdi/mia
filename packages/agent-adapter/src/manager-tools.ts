@@ -5,10 +5,11 @@ import { z } from "zod";
  * worker agent (Claude Code streams and gates its calls under the name `Agent`), `TaskStop` stops one. An adapter
  * whose runtime names them otherwise reports its calls under these names. A worker agent's tool list leaves both out.
  */
-export const DELEGATE_TOOLS: readonly string[] = ["Task", "Agent"];
+export const DELEGATE_TOOL = "Task";
+export const DELEGATE_TOOLS: readonly string[] = [DELEGATE_TOOL, "Agent"];
 export const STOP_TOOL = "TaskStop";
 /** The tools a manager agent's session enables. */
-export const MANAGER_TOOLS = ["Task", STOP_TOOL] as const;
+export const MANAGER_TOOLS = [DELEGATE_TOOL, STOP_TOOL] as const;
 
 /** The name of the worker agent Mia defines; a delegation names it as `subagent_type`. */
 export const WORKER_AGENT_NAME = "mia-worker";

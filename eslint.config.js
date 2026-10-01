@@ -26,8 +26,13 @@ const LAYERS = [
     mayImportAnything: false,
   },
   {
-    files: ["packages/claude-code-adapter/**"],
-    workspaces: ["@mia/claude-code-adapter"],
+    files: ["packages/claude-code-adapter/**", "packages/codex-adapter/**"],
+    workspaces: ["@mia/claude-code-adapter", "@mia/codex-adapter"],
+    mayImportAnything: false,
+  },
+  {
+    files: ["packages/runtimes/**"],
+    workspaces: ["@mia/runtimes"],
     mayImportAnything: false,
   },
   {

@@ -10,9 +10,9 @@ import {
   type RuntimeFileReader,
   type SessionRunner,
 } from "@mia/agent-adapter";
-import { ClaudeCodeRuntime, probeClaudeCodeSync } from "@mia/claude-code-adapter";
 import { errorMessage } from "@mia/protocol";
 import { Catalog, RecordWriter, newId, type NewId } from "@mia/records";
+import { probeRuntimeSync, startRuntime } from "@mia/runtimes";
 import { collectArtifact, type ArtifactCollector } from "./artifact-collector.ts";
 import { collectBuildInfoSync } from "./build-info.ts";
 import { Engine } from "./engine.ts";
@@ -119,7 +119,7 @@ export const startServer = async (input: {
   const log = input.log ?? ((message: string) => process.stderr.write(`[mia-server] ${message}\n`));
   const identity: ServerIdentity = {
     // eslint-disable-next-line no-restricted-syntax -- runs before serving
-    runtime: probeClaudeCodeSync(profile.runtime, input.env),
+    runtime: probeRuntimeSync(profile.runtime, input.env),
     // eslint-disable-next-line no-restricted-syntax -- runs before serving
     build: collectBuildInfoSync("mia-server", SOURCE_ROOT),
   };
@@ -135,11 +135,12 @@ export const startServer = async (input: {
     let runtime: AgentRuntime | null = null;
     try {
       await gate.start();
-      runtime = await ClaudeCodeRuntime.start({
+      runtime = await startRuntime({
         config: profile.runtime,
         gate,
         env: input.env,
-        bridgeLog: input.env.MIA_MCP_HTTP_LOG,
+        stateDirectory: profile.stateDirectory,
+        attributionDeadline: input.attributionDeadline,
       });
       const started = runtime;
       const engine = new Engine({

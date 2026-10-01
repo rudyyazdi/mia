@@ -693,6 +693,8 @@ const endTask = (
           ? "the runtime ended before the call's result arrived; it may have run"
           : "its worker agent ended before the call's result arrived; it may still run",
       });
+      // Its exclusive-tool lease stays held: the call may still be running (an HTTP call outlives a killed runtime),
+      // so no other call may use the tool. Only the call's result releases it.
       if (!outcome.runtimeGone)
         unsettled.push([
           call.runtimeCallId,
@@ -703,8 +705,6 @@ const endTask = (
             toolIdentity: call.toolIdentity,
           },
         ]);
-      else if (draft.draft.leases.get(call.toolIdentity)?.callId === call.id)
-        draft.releaseLease(call.toolIdentity, draft.id("evt"));
     } else if (call.status === "awaiting_approval" && call.approvalId !== null) {
       draft.resolveApproval(task, {
         approvalId: call.approvalId,
@@ -759,12 +759,10 @@ const endTask = (
   const tasks = new Map(draft.draft.tasks);
   tasks.delete(task.id);
   const unsettledCalls = new Map([...draft.draft.unsettledCalls, ...unsettled]);
-  // Beyond the bound the oldest is given up on: its outcome stays unknown, and its exclusive tool is freed.
-  for (const [runtimeCallId, call] of unsettledCalls) {
+  // Beyond the bound the oldest is given up on: its outcome stays unknown, and a lease it holds stays held.
+  for (const runtimeCallId of unsettledCalls.keys()) {
     if (unsettledCalls.size <= MAX_UNSETTLED_CALLS) break;
     unsettledCalls.delete(runtimeCallId);
-    if (draft.draft.leases.get(call.toolIdentity)?.callId === call.callId)
-      draft.releaseLease(call.toolIdentity, draft.id("evt"));
   }
   draft.advance({ ...draft.draft, tasks, unsettledCalls });
 };
@@ -1529,7 +1527,7 @@ const sessionLost = (state: ConversationState): Decided =>
           endedTasks: [],
           pendingDelegations: new Set(),
           tasks: new Map(),
-          leases: new Map(),
+          // Kept: their records are unreleased, and the calls holding them may still run.
           unsettledCalls: new Map(),
           pendingNote: "[Mia note] Your previous session ended and Mia could not record how.",
         },

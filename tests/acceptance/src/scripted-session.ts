@@ -157,14 +157,28 @@ export class ScriptedSession {
     });
   }
 
-  /** Ask the engine about a call, as the gate hook would; `abandon` aborting stands for the hook going away. */
-  ask(input: {
+  /**
+   * Ask the engine about a call, as the gate hook would; `abandon` aborting stands for the hook going away. A manager
+   * agent's call is first proposed on stdout, as the runtime streams it before running the hook, unless `unproposed`.
+   */
+  async ask(input: {
     toolName: string;
     input?: unknown;
     toolUseId: string;
     agentId: string | null;
     abandon?: AbortSignal;
+    unproposed?: boolean;
   }): Promise<GateDecision> {
+    if (input.agentId === null && input.unproposed !== true)
+      await this.emit({
+        type: "tool_proposed",
+        runtimeCallId: input.toolUseId,
+        parentCallId: null,
+        toolIdentity: input.toolName,
+        arguments: input.input ?? {},
+        complete: false,
+        at: at(),
+      });
     return this.options.decide({
       toolName: input.toolName,
       input: input.input ?? {},

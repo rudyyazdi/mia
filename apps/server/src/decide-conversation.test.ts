@@ -8,7 +8,11 @@ import {
   type GateRequestEvent,
 } from "./decide-conversation.ts";
 import type { EngineEffect } from "./engine-effects.ts";
-import { MAX_RUNNING_TASKS, type ConversationState } from "./conversation-state.ts";
+import {
+  MAX_RUNNING_TASKS,
+  MAX_UNSETTLED_CALLS,
+  type ConversationState,
+} from "./conversation-state.ts";
 import { recordLabels, type EngineRecord } from "./engine-records.ts";
 
 const NOW = new Date("2026-09-29T12:00:00.000Z");
@@ -414,15 +418,33 @@ describe("stops and ends", () => {
     expect(effectLabels(stop.effects)).toContain("stop_session");
   });
 
-  it("ends a stopped session's tasks as interruptions, each released call unknown and its lease released", () => {
+  it("ends a stopped session's tasks as interruptions, each released call unknown and its lease still held", () => {
     const tool = { toolIdentity: "mcp__desk__click", exclusive: true, policy: "allow" as const };
     const stopped = after(running("a1"), gate(tool), { kind: "stop_all", ...drawn, by: "client" });
     const ended = accepted(stopped, sessionEnded("killed"));
     expect(ended.next.tasks.size).toBe(0);
-    expect(ended.next.leases.size).toBe(0);
     expect(effectLabels(ended.effects)).toContain("deliver interruption_outcome");
     expect(effectLabels(ended.effects)).toContain("notify unknown");
     expect(ended.next.pendingNote).toContain("outcome is unknown");
+    // The killed runtime's call may still run, so the next session's worker agent may not use the tool.
+    expect(ended.next.leases.has("mcp__desk__click")).toBe(true);
+    const next = after(
+      ended.next,
+      message("again"),
+      turnBegan,
+      taken("uuid-again"),
+      workerStarted("a2"),
+    );
+    expect(gateAnswer(accepted(next, gate({ ...tool, agentId: "a2" })))).toBe("deny");
+  });
+
+  it("keeps an exclusive tool held when its unsettled call is given up on beyond the bound", () => {
+    const tool = { toolIdentity: "mcp__desk__click", exclusive: true, policy: "allow" as const };
+    let state = after(running("a1"), gate(tool));
+    for (let index = 0; index < MAX_UNSETTLED_CALLS; index += 1) state = after(state, gate({}));
+    const ended = after(state, workerEnded("a1", "stopped"));
+    expect(ended.unsettledCalls.size).toBe(MAX_UNSETTLED_CALLS);
+    expect(ended.leases.has("mcp__desk__click")).toBe(true);
   });
 
   it("ends a crashed session's tasks as failed, not as interruptions", () => {
@@ -432,9 +454,12 @@ describe("stops and ends", () => {
   });
 
   it("lets a session go whose end could not be recorded, so the next message opens a new one", () => {
-    const lost = accepted(running("a1"), { kind: "session_lost" });
+    const tool = { toolIdentity: "mcp__desk__click", exclusive: true, policy: "allow" as const };
+    const lost = accepted(after(running("a1"), gate(tool)), { kind: "session_lost" });
     expect(lost.records).toEqual([]);
     expect(lost.next.session).toBeNull();
+    // Its lease is still unreleased in the records, so memory keeps it.
+    expect(lost.next.leases.has("mcp__desk__click")).toBe(true);
     expect(effectLabels(accepted(lost.next, message("again")).effects)).toContain("open_session");
   });
 

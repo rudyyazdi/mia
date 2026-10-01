@@ -128,6 +128,15 @@ export const MAX_HELD_CALLS = 32;
 /** How many gate requests may wait for their worker agent's start at once; beyond it they are denied unattributed. */
 export const MAX_ATTRIBUTION_WAITS = 32;
 
+/**
+ * The most of a session's transcript or hook evidence its end reads into memory. A long-lived session's files can grow
+ * past it; such a file is recorded as unreadable for its size and left where the runtime wrote it.
+ */
+/** The key a manager agent's call waits under for its proposal; distinct from any runtime task id. */
+const proposalKey = (runtimeCallId: string): string => `proposal:${runtimeCallId}`;
+
+export const MAX_SESSION_EVIDENCE_BYTES = 64 * 1024 * 1024;
+
 /** A few readers of one conversation at once, each a page behind at most before it reads the catalog again. */
 const FEED_LIMITS: FeedLimits = { subscribers: 8, buffered: 256 };
 
@@ -194,8 +203,13 @@ export class Engine implements CommandEngine {
   private starting = false;
   private readonly held = new Holds<GateDecision>(MAX_HELD_CALLS);
   private asking: Asking | null = null;
-  /** Gate requests waiting for their worker agent's start, by the runtime's task id (MAX_ATTRIBUTION_WAITS). */
+  /**
+   * Gate requests waiting for stdout to catch up (MAX_ATTRIBUTION_WAITS): a worker agent's call for the report of its
+   * start (keyed by the runtime's task id), and a manager agent's call for its own proposal (keyed by call id).
+   */
   private readonly attributionWaits = new Map<string, (() => void)[]>();
+  /** The manager agent's calls stdout has proposed, most recent last (MAX_ATTRIBUTION_WAITS). */
+  private readonly proposedManagerCalls: string[] = [];
   /** The handler the session decides its calls with; one per engine, so it can be told from a successor's. */
   private readonly decide: GateHandler = (request) => this.decideGate(request);
 
@@ -270,20 +284,24 @@ export class Engine implements CommandEngine {
         this.machine = machine;
         this.clients.activate(origin);
       })
-      .with({ kind: "deliver_event" }, ({ eventId, event }) =>
+      // A replaced conversation's late events (its closed session finishing what it had) are recorded, but its
+      // client now follows the new conversation, so they are not delivered.
+      .with({ kind: "deliver_event" }, ({ eventId, event }) => {
+        if (machine !== this.machine) return;
         this.clients.deliver(event, {
           id: eventId,
           conversationId,
           sequence: eventSequence(changes, eventId),
           serverTime,
-        }),
-      )
-      .with({ kind: "notify_tool_call" }, ({ payload }) =>
+        });
+      })
+      .with({ kind: "notify_tool_call" }, ({ payload }) => {
+        if (machine !== this.machine) return;
         this.clients.deliver(
           { type: "tool_call", payload },
           { id: this.deps.newId("evt"), conversationId, sequence: null, serverTime },
-        ),
-      )
+        );
+      })
       .with({ kind: "open_session" }, ({ session }) => this.openSession(machine, session))
       .with({ kind: "send_message" }, ({ text, runtimeMessageId }) => {
         if (this.session?.handle.send(text, runtimeMessageId) === true) return;
@@ -301,7 +319,7 @@ export class Engine implements CommandEngine {
         const asking = this.asking;
         if (!asking) throw new Error("no gate request is being dispatched");
         if (asking.answer) throw new Error("a gate request is answered once");
-        asking.answer = this.takeAnswer(asking, answer);
+        asking.answer = this.takeAnswer(machine, asking, answer);
       })
       .with({ kind: "answer_held" }, ({ approvalId, decision }) => {
         this.held.reply(approvalId, decision);
@@ -347,9 +365,10 @@ export class Engine implements CommandEngine {
     result: SessionResult,
   ): Promise<void> {
     const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
+    const maxBytes = MAX_SESSION_EVIDENCE_BYTES;
     const [transcript, hookRead, unresultedBodies] = await Promise.all([
-      this.deps.readEvidence(result.streamLogPath, { signal }),
-      this.deps.readEvidence(result.hookEvidencePath, { signal }),
+      this.deps.readEvidence(result.streamLogPath, { signal, maxBytes }),
+      this.deps.readEvidence(result.hookEvidencePath, { signal, maxBytes }),
       this.readUnresultedBodies(machine.state),
     ]);
     const hookEvidence = hookEvidenceFrom(hookRead);
@@ -510,8 +529,7 @@ export class Engine implements CommandEngine {
           clientId: this.clients.clientId,
           requested: { model: runtime.model, effort: runtime.effort },
         });
-        for (const wake of this.attributionWaits.get(started.runtimeTaskId) ?? []) wake();
-        this.attributionWaits.delete(started.runtimeTaskId);
+        this.wakeWaits(started.runtimeTaskId);
       })
       .with({ type: "worker_ended" }, (ended) => {
         this.report(machine, {
@@ -526,9 +544,18 @@ export class Engine implements CommandEngine {
       .with({ type: "malformed_event" }, ({ error }) =>
         this.deps.log(`malformed runtime output: ${error}`),
       )
+      .with({ type: "tool_proposed" }, ({ runtimeCallId, parentCallId }) => {
+        if (parentCallId !== null) return;
+        const key = proposalKey(runtimeCallId);
+        this.proposedManagerCalls.push(key);
+        this.proposedManagerCalls.splice(
+          0,
+          this.proposedManagerCalls.length - MAX_ATTRIBUTION_WAITS,
+        );
+        this.wakeWaits(key);
+      })
       .with(
         { type: "runtime_started" },
-        { type: "tool_proposed" },
         { type: "assistant_message" },
         { type: "runtime_exit" },
         () => undefined,
@@ -558,7 +585,7 @@ export class Engine implements CommandEngine {
   private async decideGate(request: GateRequest): Promise<GateDecision> {
     const machine = this.session?.machine;
     if (!machine || this.shuttingDown) return NO_CONVERSATION;
-    if (request.agentId !== null) await this.awaitAttribution(machine, request.agentId);
+    await this.awaitStdout(machine, request);
     const { runtime } = this.deps.profile;
     const asking: Asking = { abandoned: request.abandoned, answer: null };
     const previous = this.asking;
@@ -592,39 +619,57 @@ export class Engine implements CommandEngine {
   }
 
   /** Wait until the runtime has reported worker agent `agentId`'s start, or the attribution deadline passes. */
-  private async awaitAttribution(machine: ConversationMachine, agentId: string): Promise<void> {
-    const known = () =>
-      [...(machine.state?.tasks.values() ?? [])].some((task) => task.runtimeTaskId === agentId);
-    if (known()) return;
+  /**
+   * Waits, bounded, until stdout has caught up with a gate request that can outrun it: a worker agent's call until the
+   * report of its start, and a manager agent's call until its proposal, so the turn it belongs to is opened from the
+   * stdout events before it (the replayed message that makes the turn the user's) rather than by the call.
+   */
+  private async awaitStdout(machine: ConversationMachine, request: GateRequest): Promise<void> {
+    const { agentId, toolUseId } = request;
+    // A call without an id cannot be matched to its proposal; the decision reads it as it is.
+    if (agentId === null && toolUseId === undefined) return;
+    const key = agentId ?? proposalKey(toolUseId ?? "");
+    const caughtUp = () =>
+      agentId === null
+        ? this.proposedManagerCalls.includes(key)
+        : [...(machine.state?.tasks.values() ?? [])].some((task) => task.runtimeTaskId === agentId);
+    if (caughtUp()) return;
     const waiting = [...this.attributionWaits.values()].reduce((sum, list) => sum + list.length, 0);
     if (waiting >= MAX_ATTRIBUTION_WAITS) return;
-    const started = Promise.withResolvers<undefined>();
-    const wake = () => started.resolve(undefined);
-    this.attributionWaits.set(agentId, [...(this.attributionWaits.get(agentId) ?? []), wake]);
+    const reached = Promise.withResolvers<undefined>();
+    const wake = () => reached.resolve(undefined);
+    this.attributionWaits.set(key, [...(this.attributionWaits.get(key) ?? []), wake]);
     await untilAborted(
-      () => started.promise,
+      () => reached.promise,
       this.deps.attributionDeadline(),
       () => undefined,
     );
-    // A wait the deadline ended leaves the list; one the start woke has already left it.
-    const remaining = (this.attributionWaits.get(agentId) ?? []).filter((other) => other !== wake);
-    if (remaining.length > 0) this.attributionWaits.set(agentId, remaining);
-    else this.attributionWaits.delete(agentId);
+    // A wait the deadline ended leaves the list; one stdout woke has already left it.
+    const remaining = (this.attributionWaits.get(key) ?? []).filter((other) => other !== wake);
+    if (remaining.length > 0) this.attributionWaits.set(key, remaining);
+    else this.attributionWaits.delete(key);
   }
 
-  private takeAnswer(asking: Asking, answer: GateAnswer): Promise<GateDecision> {
+  private wakeWaits(key: string): void {
+    for (const wake of this.attributionWaits.get(key) ?? []) wake();
+    this.attributionWaits.delete(key);
+  }
+
+  private takeAnswer(
+    machine: ConversationMachine,
+    asking: Asking,
+    answer: GateAnswer,
+  ): Promise<GateDecision> {
     return match(answer)
       .with({ kind: "answer" }, ({ decision }) => Promise.resolve(decision))
       .with({ kind: "hold" }, ({ approvalId }) => {
-        const machine = this.session?.machine;
         const held = this.held.hold(approvalId, {
           signal: asking.abandoned,
           onAbort: () => {
             // Recorded once the dispatch that held it has returned, if it aborted that early.
-            if (machine)
-              queueMicrotask(() =>
-                this.report(machine, { kind: "approval_abandoned", ...this.drawn(), approvalId }),
-              );
+            queueMicrotask(() =>
+              this.report(machine, { kind: "approval_abandoned", ...this.drawn(), approvalId }),
+            );
             return ABANDONED;
           },
         });
@@ -901,10 +946,12 @@ export class Engine implements CommandEngine {
       ...this.drawn(),
       taskId: payload.task_id,
     });
-    if (dispatched.kind === "rejected")
-      return dispatched.rejection.kind === "already_stopping"
-        ? { ok: true, result: { already_stopping: true } }
-        : fail("not_found", `task ${payload.task_id} is not running`);
+    // A task already being stopped is asked about again: an earlier ask may have failed (a full queue, a failed
+    // record), and asking twice only repeats the request.
+    const alreadyStopping =
+      dispatched.kind === "rejected" && dispatched.rejection.kind === "already_stopping";
+    if (dispatched.kind === "rejected" && !alreadyStopping)
+      return fail("not_found", `task ${payload.task_id} is not running`);
     if (dispatched.kind === "failed")
       return fail("record_failure", `stop not recorded: ${errorMessage(dispatched.error)}`);
     const asked = task
@@ -922,6 +969,7 @@ export class Engine implements CommandEngine {
       result: {
         task_id: payload.task_id,
         gate_closed: true,
+        ...(alreadyStopping ? { already_stopping: true } : {}),
         manager_asked: asked.ok,
         ...(asked.ok ? {} : { manager_not_asked: asked.message }),
       },

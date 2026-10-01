@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import type { ExecutionRow, TaskRow, ToolCallRow, TurnRow } from "@mia/records";
 import type { MiaClient } from "@mia/text-client";
@@ -218,6 +219,62 @@ describe("a manager agent that never blocks", () => {
     expect((await session.waitForMessages(2))[1]).toContain("TaskStop");
   });
 
+  it("asks the manager agent again when a task is stopped again after the first ask failed", async () => {
+    const session = await turnWithWorker(scripted, { text: "go", runtimeTaskId: "a1" });
+    for (let index = 0; index < 16; index += 1)
+      ackResult(await client.submitText(`message ${index}`));
+    const started = await client.waitFor("task_started");
+    expect(ackResult(await client.interrupt(started.payload.task_id))).toMatchObject({
+      gate_closed: true,
+      manager_asked: false,
+    });
+    await session.endTurn();
+    await session.beginTurn(session.messages.length - 1);
+    expect(ackResult(await client.interrupt(started.payload.task_id))).toMatchObject({
+      already_stopping: true,
+      manager_asked: true,
+    });
+    expect(session.messages.at(-1)?.text).toContain("TaskStop");
+  });
+
+  it("makes a turn the user's when its delegation reaches the gate before stdout replays the message", async () => {
+    const session = await turnWithWorker(scripted, { text: "go", runtimeTaskId: "a1" });
+    await session.endTurn();
+    await session.endWorker("a1");
+    ackResult(await client.submitText("second"));
+    await session.beginTurn();
+    const message = must(session.messages.at(-1), "the second message");
+    const asked = session.ask({
+      toolName: "Agent",
+      input: { subagent_type: "mia-worker", run_in_background: true },
+      toolUseId: "toolu_delegate_a2",
+      agentId: null,
+      unproposed: true,
+    });
+    // Every pending callback runs first, so the gate request gets as far as it can before stdout catches up.
+    await setImmediate();
+    await session.emit({
+      type: "input_taken",
+      runtimeMessageId: message.runtimeMessageId,
+      at: new Date().toISOString(),
+    });
+    await session.emit({
+      type: "tool_proposed",
+      runtimeCallId: "toolu_delegate_a2",
+      parentCallId: null,
+      toolIdentity: "Agent",
+      arguments: {},
+      complete: false,
+      at: new Date().toISOString(),
+    });
+    expect(await asked).toEqual({ behavior: "allow" });
+    const turns = rows<Pick<TurnRow, "cause">>(
+      "SELECT cause FROM turns WHERE conversation_id = ? ORDER BY started_at, rowid",
+      conversationId(),
+    );
+    expect(turns.at(-1)?.cause).toBe("user_input");
+  });
+
   it("records a kill whose exit was never seen as unknown, not as confirmed", async () => {
     const session = await turnWithWorker(scripted, { text: "go", runtimeTaskId: "a1" });
     session.cancellation = "unknown";
@@ -234,6 +291,25 @@ describe("a manager agent that never blocks", () => {
     expect(await client.startConversation()).not.toBe(first);
     // Closed: the idle session takes no more input.
     expect(session.handle.send("more", "uuid-more")).toBe(false);
+  });
+
+  it("records a replaced conversation's late reply without sending it to the new conversation's client", async () => {
+    const session = await turnWithWorker(scripted, { text: "hello" });
+    await session.endTurn();
+    const first = conversationId();
+    await client.startConversation();
+    await session.beginTurn();
+    await session.reply("late");
+    // Acknowledged after anything sent before it on the same connection.
+    expect((await client.sendDiagnostics()).disposition).toBe("accepted");
+    expect(
+      client.events.filter(
+        (event) => event.type === "reply_delta" && event.payload.conversation_id === first,
+      ),
+    ).toEqual([]);
+    expect(
+      rows("SELECT id FROM events WHERE conversation_id = ? AND type = 'reply_delta'", first),
+    ).toHaveLength(1);
   });
 
   it("keeps accepting messages while tasks run, up to its queue's bound", async () => {

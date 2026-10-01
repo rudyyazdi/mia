@@ -141,7 +141,7 @@ export const MAX_CALLS_PER_TASK = 256;
 
 /**
  * How many released calls of ended tasks may wait for their result at once. Beyond it the oldest is given up on: its
- * outcome stays unknown, and an exclusive tool it held is released, recorded as such.
+ * outcome stays unknown, and an exclusive tool it held stays leased for the conversation, as the call may still run.
  */
 export const MAX_UNSETTLED_CALLS = 64;
 
@@ -184,16 +184,3 @@ export const withCall = (
   if (!call) throw new Error(`call ${callId} is not a call of task ${task.id}`);
   return { ...task, calls: new Map(task.calls).set(callId, { ...call, ...fields }) };
 };
-
-/** The statuses a call leaves once it has an outcome: nothing more happens to it. */
-const SETTLED: ReadonlySet<ToolCallStatus> = new Set([
-  "denied",
-  "blocked_gate",
-  "invalidated",
-  "completed",
-  "failed",
-  "cancelled",
-  "unknown",
-]);
-
-export const isSettled = (status: ToolCallStatus): boolean => SETTLED.has(status);

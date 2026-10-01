@@ -57,10 +57,11 @@ export const EVIDENCE_READ_TIMEOUT_MS = 10_000;
 export const STOP_WAIT_MS = 5_000;
 
 /**
- * The attribution deadline an entry point should give `startServer`: how long a worker agent's call may wait for the
- * runtime's report of that worker agent's start, which can trail the call by the time stdout takes to be read.
+ * The attribution deadline an entry point should give `startServer`: how long a call may wait for stdout to report
+ * what came before it (its worker agent's start, or the manager agent's proposal of it). Stdout pauses while a
+ * result's evidence is read, so it outlasts EVIDENCE_READ_TIMEOUT_MS.
  */
-export const ATTRIBUTION_WAIT_MS = 5_000;
+export const ATTRIBUTION_WAIT_MS = 15_000;
 
 export const SOURCE_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 

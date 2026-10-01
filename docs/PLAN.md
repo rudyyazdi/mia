@@ -62,19 +62,19 @@ Terms are defined in the [glossary](GLOSSARY.md).
 
 ## Delivery approach
 
-Deliverables are sequential checkpoints: the maintainer confirms each before the next begins. Each builds on the last by changing it, removing any code the new one no longer needs. Earlier journeys are re-run on the new code; acceptance evidence is attached to the deliverable's pull request, not kept in the repository. A confirmed deliverable's section below is deleted in the last commit of its own pull request. Deliverable numbers stay fixed and are never reused.
+Deliverables are sequential checkpoints: the maintainer confirms each before the next begins. Each builds on the last by changing it, removing any code the new one no longer needs. Earlier journeys are re-run on the new code; acceptance evidence is attached to the deliverable's pull request, not kept in the repository. In the last commit of its own pull request, a confirmed deliverable's section shrinks to at most 40 words, marked done and linking that pull request. Deliverable numbers stay fixed and are never reused.
 
 Each deliverable extends a working user journey. Provide one repeatable demo with expected results and test relevant failure cases as soon as the capability appears. Its acceptance record identifies each requirement as demonstrated live, verified with a test substitute, or blocked. Missing required capabilities block acceptance; a substitute is not a live pass.
 
 Repeat the shared agent-adapter checks for approval and interruption for each runtime. Establish UI-adapter content/event checks in deliverable 5. Re-run relevant earlier journeys as capabilities expand. End-to-end evaluation is continuous, not a final milestone.
 
-## Deliverable 2 — Delegate to worker agents
+## Deliverable 1 — Prove one agent adapter (done)
 
-Replace D1's single agent with a manager agent and worker agents on the D1 runtime; Claude Code runs worker agents as its subagents. The manager agent never blocks, accepts input while tasks run (D1's busy response goes away), and makes no tool calls itself. Tasks run in parallel, outlive the turn that started them, and start a turn when they end. The engine refuses a second concurrent call to an exclusive tool, and the interrupt control stops every task through the engine. Add versioned manager-agent instructions (`prompts/manager-v1.md`). The runtime must first prove that worker agents' tool calls reach Mia's approval bridge, honor approval policy, and stop on interruption ([#200](https://github.com/rudyyazdi/mia/issues/200)); if it cannot, this deliverable is blocked.
+Done. A text client, a persistent server and one Claude Code adapter, with per-call approval, honest interruption and a private, exportable conversation record. Evidence: [#202](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737705).
 
-**User acceptance test:** In the text client, ask for two independent things, one of which needs approval, and start a long-running background task. While the approval is pending, ask a third question and get its answer. Reject the approval. Have the manager agent interrupt one worker agent, then use the interrupt control to stop the rest. Inspect the record.
+## Deliverable 2 — Delegate to worker agents (done)
 
-**Pass:** The manager agent answers every message without waiting on tool work and makes no tool calls. A pending approval request, a rejection, or a long-running task delays only its own worker agent. Each task's result reaches the user in a turn recorded as caused by that task, and a rejected call is reported as not run. No worker agent starts another. A second concurrent exclusive tool call is refused. The interrupt control stops every task without the manager agent; in-flight actions that cannot stop are reported honestly. Records link each task to its worker agent's execution and to the turn that started it.
+Done in [#202](https://github.com/rudyyazdi/mia/pull/202). A manager agent that never blocks delegates all tool work to parallel worker agents. Approval holds only its own worker agent, a task's end starts a turn, and the interrupt control stops every task.
 
 ## Deliverable 3 — Add desktop voice and text
 

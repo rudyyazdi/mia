@@ -1,6 +1,9 @@
 import type { RuntimeKind } from "./config.ts";
 
-/** Where a runtime's credential was found: each adapter detects its own runtime's sources. */
+/**
+ * Where a runtime's credential was found: each adapter detects its own runtime's sources, and every adapter's sources are
+ * declared here once, so a report names one of them.
+ */
 export type CredentialSource = "ANTHROPIC_API_KEY" | "claude_credentials_file" | "none_detected";
 
 /**

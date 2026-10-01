@@ -35,7 +35,7 @@ const LAYERS = [
     workspaces: ["@mia/server", "@mia/text-client", "@mia/debug-cli", "@mia/probe"],
     mayImportAnything: false,
   },
-  // Layer 4: tests are the top layer and forbid nothing, so they get no override.
+  // Tests are the top layer and forbid nothing, so they get no override.
   {
     files: ["tests/*/**"],
     workspaces: ["@mia/acceptance"],

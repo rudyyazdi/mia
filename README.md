@@ -25,7 +25,7 @@ substituted only inside a string value, and the client loads the profile as the 
 ```sh
 npm install
 npm run typecheck
-npm test            # deterministic lane: fixture, gate, bridge, records, engine (scripted runtime)
+npm run check       # format, lint, types, duplicates, unit and acceptance tests (see Tests)
 ```
 
 ## Configure
@@ -58,16 +58,19 @@ npm run mia -- debug export <id> --output ./exports/<id> --state <stateDirectory
 npm run mia -- debug verify ./exports/<id>
 ```
 
-## Verify against the real runtime
+## Tests
 
-```sh
-npm run probe                     # capability probe (writes .mia-state/probe/<stamp>/, 4 live sessions)
-npm run live -- --repeat 2        # promptfoo live lane against the controlled fixture (~18 live messages)
-```
+| Kind         | Command                      | Checks                                                                                                   |
+| ------------ | ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `unit`       | `npm run test:unit`          | one module at a time, beside it; the runtime and network are faked                                       |
+| `acceptance` | `npm run test:acceptance`    | the real server, gateway, records and client together, with a scripted Claude Code                       |
+| `probe`      | `npm run probe`              | that Claude Code still behaves as Mia assumes: hook gating, interruption, background and stopped workers |
+| `live`       | `npm run live -- --repeat 2` | Mia's user journeys against real Claude Code and the controlled fixture, judged from the fixture ledger  |
 
-Both count live calls in `.mia-state/live-calls.jsonl` and stop at `MIA_LIVE_CALL_CAP` (default 50). The live lane writes
-`.mia-state/live/<stamp>/live-results.md`; pass `--manager-prompt <file>` to compare manager prompt versions on the same
-fixture-ledger evidence.
+CI runs `npm run check` (unit and acceptance) on every pull request. `probe` and `live` need a logged-in agent runtime,
+never run in CI, and run locally to sign off a deliverable. Both count live calls in `.mia-state/live-calls.jsonl`, stop
+at `MIA_LIVE_CALL_CAP` (default 50), and write their results under `.mia-state/`; pass `--manager-prompt <file>` to
+`live` to compare manager prompt versions on the same evidence.
 
 ## Layout
 
@@ -82,6 +85,6 @@ fixture-ledger evidence.
 | `packages/records`        | SQLite catalog, content-addressed objects, record writer, snapshot queries, export/verify, HTML report                         |
 | `packages/mcp-http`       | loopback Streamable-HTTP host used by the fixture and the bridge                                                               |
 | `fixtures/controlled-mcp` | controlled MCP fixture with append-only ledger and barriers                                                                    |
-| `tests/acceptance`        | H lane (scripted runtime), promptfoo live lane                                                                                 |
+| `tests/acceptance`        | acceptance tests (scripted runtime), live tests                                                                                |
 | `tools/probe`             | capability probe                                                                                                               |
 | `prompts/`                | versioned manager and worker agent instructions (`manager-v1.md`, `worker-v1.md`)                                              |

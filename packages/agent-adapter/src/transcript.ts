@@ -2,7 +2,6 @@ import type { FileHandle } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { Transform, Writable, type Readable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { LineSplitter } from "./stream.ts";
 
 /**
  * Appends to `file`, opened (and created, owner-only) on the first write, so a turn that retains nothing leaves no
@@ -122,3 +121,19 @@ export const retainStdout = async (input: {
     { signal: input.signal },
   );
 };
+
+/** Incremental newline-delimited splitter. */
+export class LineSplitter {
+  private buffer = "";
+  push(chunk: string): string[] {
+    this.buffer += chunk;
+    const lines = this.buffer.split("\n");
+    this.buffer = lines.pop() ?? "";
+    return lines;
+  }
+  flush(): string[] {
+    const rest = this.buffer;
+    this.buffer = "";
+    return rest.length > 0 ? [rest] : [];
+  }
+}

@@ -1,5 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { MAX_GATE_PAYLOAD_BYTES, ToolGate, type GateDecision, type GateRequest } from "./gate.ts";
+import {
+  MAX_GATE_PAYLOAD_BYTES,
+  shellQuoted,
+  ToolGate,
+  type GateDecision,
+  type GateRequest,
+} from "./gate.ts";
 
 const gates: ToolGate[] = [];
 afterEach(async () => {
@@ -117,5 +124,19 @@ describe("ToolGate", () => {
     await abandoned.promise;
     expect(signal.aborted).toBe(true);
     expect(await answer).toBe("hook gone");
+  });
+});
+
+describe("shellQuoted", () => {
+  it("quotes the hook's arguments so the shell expands nothing in a path", () => {
+    const parts = ["/state/$(touch pwned)/`id`", "it's", "a b", ""];
+    const printed = execFileSync(
+      "/bin/sh",
+      ["-c", `printf '%s\\n' ${parts.map(shellQuoted).join(" ")}`],
+      {
+        encoding: "utf8",
+      },
+    );
+    expect(printed).toBe(parts.map((part) => `${part}\n`).join(""));
   });
 });

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 
@@ -40,4 +41,50 @@ export const resolveExecutableSync = (
       .map((entry) => resolve(lookup.cwd, entry, executable))
       .find(isExecutableFileSync) ?? null
   );
+};
+
+/** The environment a runtime runs with: the defined entries of `env`, overlaid with `overlay` (a profile's `env`). */
+export const overlaidEnvironment = (
+  env: NodeJS.ProcessEnv,
+  overlay: Readonly<Record<string, string>>,
+): Record<string, string> => {
+  const merged: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) merged[name] = value;
+  return Object.assign(merged, overlay);
+};
+
+/** What a static probe found of a runtime's executable: its absolute path and the version it prints. */
+export interface ExecutableProbe {
+  resolved: string | null;
+  version: string | null;
+  errors: string[];
+}
+
+/**
+ * Finds `executable` as a launch would (in `cwd`, on `env`'s PATH) and asks it its `--version`. Blocks: a static
+ * probe runs before serving.
+ */
+export const probeExecutableSync = (
+  executable: string,
+  launch: { env: Record<string, string>; cwd: string },
+): ExecutableProbe => {
+  const resolved = resolveExecutableSync(executable, { path: launch.env.PATH, cwd: launch.cwd });
+  if (!resolved)
+    return {
+      resolved,
+      version: null,
+      errors: [`runtime executable "${executable}" not found on PATH`],
+    };
+  const probe = spawnSync(resolved, ["--version"], {
+    encoding: "utf8",
+    timeout: 20_000,
+    env: launch.env,
+  });
+  const version = probe.status === 0 ? probe.stdout.trim() : null;
+  const failure = probe.stderr?.trim() || probe.error?.message || "unknown";
+  return {
+    resolved,
+    version,
+    errors: version === null ? [`"${resolved} --version" failed: ${failure}`] : [],
+  };
 };

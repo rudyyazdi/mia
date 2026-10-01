@@ -1,7 +1,9 @@
 import {
+  sessionResultOf,
+  spawnRuntime,
   writeLaunchFiles,
   type AgentRuntime,
-  type RuntimeConfig,
+  type ClaudeCodeConfig,
   type SessionEvent,
   type SessionHandle,
   type SessionOptions,
@@ -13,7 +15,7 @@ import { errorMessage, type RuntimeCancellation } from "@mia/protocol";
 import { ApprovalBridge } from "./bridge.ts";
 import { ClaudeTranslator, taskEventsOf } from "./claude-translate.ts";
 import { prepareSession, type SessionPlan } from "./launch.ts";
-import { spawnRuntime } from "./runtime-process.ts";
+import { parseStreamLine, redactLine } from "./stream.ts";
 
 /**
  * Claude Code, started: the approval bridge its sessions name as their prompt tool, and the sessions themselves. The
@@ -27,7 +29,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
   /** `bridgeLog` names the file the bridge logs its requests to, if any. */
   static async start(input: {
-    config: RuntimeConfig;
+    config: ClaudeCodeConfig;
     gate: ToolGate;
     env: NodeJS.ProcessEnv;
     bridgeLog: string | undefined;
@@ -58,7 +60,7 @@ export class ClaudeCodeSessions implements SessionRunner {
    * hook decides every one) and which denies any that does, since it never has a handler.
    */
   constructor(
-    readonly config: RuntimeConfig,
+    readonly config: ClaudeCodeConfig,
     private readonly transport: { gate: ToolGate; bridge: ApprovalBridge },
     private readonly env: NodeJS.ProcessEnv,
   ) {}
@@ -163,9 +165,24 @@ const startSession = (input: {
     streamLogPath: plan.files.streamLog,
     launch: plan.description,
     emit: onEvent,
-    onMessage: async (message) => {
-      for (const event of translator.translate(message, now)) await onEvent(event);
-      for (const event of taskEventsOf(message, now)) await onEvent(event);
+    // Each line's events are handed over, in order, before its redacted text is retained; a malformed line
+    // becomes a `malformed_event`.
+    handleLine: async (line) => {
+      const parsed = parseStreamLine(line);
+      if (!parsed) return null;
+      const retained = redactLine(parsed);
+      if (!parsed.ok) {
+        await onEvent({
+          type: "malformed_event",
+          raw: retained.slice(0, 2000),
+          error: parsed.error,
+          at: now(),
+        });
+        return retained;
+      }
+      for (const event of translator.translate(parsed.message, now)) await onEvent(event);
+      for (const event of taskEventsOf(parsed.message, now)) await onEvent(event);
+      return retained;
     },
   });
   if ("spawnFailed" in runtime)
@@ -193,17 +210,14 @@ const startSession = (input: {
   const result = runtime.exited.then(async (exit): Promise<SessionResult> => {
     inputOpen = false;
     await onEvent({ type: "runtime_exit", code: exit.code, signal: exit.signal, at: now() });
-    const spawnError = runtime.spawnError();
-    const ended = { ...base, exit, cancellation };
-    if (stopped) return { ...ended, status: "killed", error: null };
-    if (spawnError)
-      return { ...ended, status: "failed", error: `runtime process error: ${spawnError}` };
-    if (exit.code === 0) return { ...ended, status: "ended", error: null };
-    return {
-      ...ended,
-      status: "failed",
-      error: `runtime exited with code ${exit.code} signal ${exit.signal}`,
-    };
+    return sessionResultOf({
+      exit,
+      cancellation,
+      stopped,
+      failure: null,
+      spawnError: runtime.spawnError(),
+      files: base,
+    });
   });
 
   return {

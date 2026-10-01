@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
-  resolveExecutableSync,
+  probeExecutableSync,
   type CredentialSource,
-  type RuntimeConfig,
+  type ClaudeCodeConfig,
   type StaticCapabilities,
 } from "@mia/agent-adapter";
 import { runtimeEnvironment } from "./launch.ts";
@@ -37,30 +37,17 @@ const REQUIRED_FLAGS = [
  * derives from it (`runtimeEnvironment`), and the credential is detected from it.
  */
 export const probeClaudeCodeSync = (
-  config: RuntimeConfig,
+  config: ClaudeCodeConfig,
   env: NodeJS.ProcessEnv,
 ): StaticCapabilities => {
-  const errors: string[] = [];
   // The launch spawns the runtime in config.workingDirectory with this environment, so probe it the same way.
   const launchEnv = runtimeEnvironment(config, env);
-  const resolved = resolveExecutableSync(config.executable, {
-    path: launchEnv.PATH,
+  const { resolved, version, errors } = probeExecutableSync(config.executable, {
+    env: launchEnv,
     cwd: config.workingDirectory,
   });
-  if (!resolved) errors.push(`runtime executable "${config.executable}" not found on PATH`);
-  let version: string | null = null;
   const flags: Record<string, boolean> = {};
   if (resolved) {
-    const versionProbe = spawnSync(resolved, ["--version"], {
-      encoding: "utf8",
-      timeout: 20_000,
-      env: launchEnv,
-    });
-    version = versionProbe.status === 0 ? versionProbe.stdout.trim() : null;
-    if (!version)
-      errors.push(
-        `"${resolved} --version" failed: ${versionProbe.stderr?.trim() || versionProbe.error?.message || "unknown"}`,
-      );
     const help =
       spawnSync(resolved, ["--help"], { encoding: "utf8", timeout: 20_000, env: launchEnv })
         .stdout ?? "";

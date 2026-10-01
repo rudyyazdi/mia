@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { redactSensitivePairs, redactString, redactValue } from "@mia/protocol";
+import { readJsonLine, redactJsonLine } from "@mia/agent-adapter";
 
 /**
  * Loose schemas for the Claude Code stream-json output. Only the fields Mia relies on are typed;
@@ -140,16 +140,10 @@ export type ParsedLine =
   | { ok: false; reason: "invalid_json"; raw: string; error: string };
 
 export const parseStreamLine = (line: string): ParsedLine | null => {
-  const trimmed = line.trim();
-  if (trimmed.length === 0) return null;
-  let json: unknown;
-  try {
-    json = JSON.parse(trimmed);
-  } catch {
-    // Not V8's message: it quotes a slice of the input ("password":hunter2), which no redaction can
-    // reliably key, and it travels beside the redacted raw line. The raw line carries the evidence.
-    return { ok: false, reason: "invalid_json", raw: trimmed, error: "invalid JSON" };
-  }
+  const read = readJsonLine(line);
+  if (!read) return null;
+  if (!read.ok) return { ok: false, reason: "invalid_json", raw: read.raw, error: "invalid JSON" };
+  const { json, raw: trimmed } = read;
   const parsed = KnownMessageSchema.safeParse(json);
   if (parsed.success) return { ok: true, message: parsed.data, json, raw: trimmed };
   const other = base.safeParse(json);
@@ -169,30 +163,10 @@ export const parseStreamLine = (line: string): ParsedLine | null => {
   };
 };
 
-/**
- * The line as it may be retained or shown: a line that parsed as JSON is redacted by key and by value,
- * even when it failed its schema, because a credential under a sensitive key need not look like a secret.
- * A line that is not JSON, typically one cut short when the runtime died mid-write, is redacted by key as
- * text (`redactSensitivePairs`) and by value. The redacted form of a JSON line is re-serialised, not
- * verbatim: duplicate keys collapse and numbers beyond double precision round.
- */
+/** The line as it may be retained or shown (see `redactJsonLine`), even when it failed its schema. */
 export const redactLine = (parsed: ParsedLine): string =>
-  !parsed.ok && parsed.reason === "invalid_json"
-    ? redactString(redactSensitivePairs(parsed.raw))
-    : JSON.stringify(redactValue(parsed.json));
-
-/** Incremental newline-delimited JSON splitter. */
-export class LineSplitter {
-  private buffer = "";
-  push(chunk: string): string[] {
-    this.buffer += chunk;
-    const lines = this.buffer.split("\n");
-    this.buffer = lines.pop() ?? "";
-    return lines;
-  }
-  flush(): string[] {
-    const rest = this.buffer;
-    this.buffer = "";
-    return rest.length > 0 ? [rest] : [];
-  }
-}
+  redactJsonLine(
+    !parsed.ok && parsed.reason === "invalid_json"
+      ? { ok: false, raw: parsed.raw }
+      : { ok: true, json: parsed.json, raw: parsed.raw },
+  );

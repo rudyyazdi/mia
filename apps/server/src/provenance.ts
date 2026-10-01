@@ -51,6 +51,7 @@ export interface ConversationFile {
 /** The files a conversation's provenance retains, read by `readConversationFiles`. */
 export interface ConversationFiles {
   agentPrompt: ConversationFile;
+  workerPrompt: ConversationFile;
   architecture: ConversationFile;
 }
 
@@ -67,8 +68,8 @@ const conversationFile = (path: string, read: RuntimeFileRead): ConversationFile
 };
 
 /**
- * Reads the profile's agent prompt and architecture document before the transaction that records a conversation
- * opens. The read is bounded like a turn-end read: it opens without blocking, refuses anything but a regular file,
+ * Reads the profile's manager and worker prompts and architecture document before the transaction that records a conversation
+ * opens. The read is bounded like a session end's evidence read: it opens without blocking, refuses anything but a regular file,
  * refuses a file over `MAX_CONVERSATION_FILE_BYTES`, and is abandoned once `signal` aborts. Only a file that does
  * not exist is recorded as unavailable; any other failure throws, and no conversation starts, because a
  * misconfigured path should not silently drop provenance.
@@ -81,13 +82,16 @@ export const readConversationFiles = async (input: {
   const { profile, read, signal } = input;
   const options = { signal, maxBytes: MAX_CONVERSATION_FILE_BYTES };
   const promptPath = profile.runtime.agentPromptFile;
+  const workerPath = profile.runtime.workerAgent.promptFile;
   const architecturePath = profile.architectureDocument;
-  const [agentPrompt, architecture] = await Promise.all([
+  const [agentPrompt, workerPrompt, architecture] = await Promise.all([
     read(promptPath, options),
+    read(workerPath, options),
     read(architecturePath, options),
   ]);
   return {
     agentPrompt: conversationFile(promptPath, agentPrompt),
+    workerPrompt: conversationFile(workerPath, workerPrompt),
     architecture: conversationFile(architecturePath, architecture),
   };
 };
@@ -163,6 +167,18 @@ export const planConversationProvenance = (input: {
           logicalName: basename(prompt.path),
         }),
   );
+  // Mia-owned worker-agent instructions, handed to the runtime as the worker agent's definition.
+  const worker = files.workerPrompt;
+  items.push(
+    worker.bytes === null
+      ? unavailable("worker_prompt", `worker prompt file missing: ${worker.path}`)
+      : retained("worker_prompt", {
+          bytes: worker.bytes,
+          version: basename(worker.path).replace(/\.md$/, ""),
+          mime: "text/markdown",
+          logicalName: basename(worker.path),
+        }),
+  );
   // Exposed runtime instructions: the runtime does not expose its full system prompt over the stream.
   items.push(
     unavailable(
@@ -178,7 +194,7 @@ export const planConversationProvenance = (input: {
   );
 
   items.push(
-    retained("tool_contracts", { bytes: json(toolContracts(profile.runtime)), version: "d1" }),
+    retained("tool_contracts", { bytes: json(toolContracts(profile.runtime)), version: null }),
   );
 
   // Requested model identities and effort; reported values live on executions.
@@ -189,7 +205,7 @@ export const planConversationProvenance = (input: {
         requested_effort: profile.runtime.effort,
         notes: profile.notes,
       }),
-      version: "d1",
+      version: null,
     }),
   );
 
@@ -282,6 +298,31 @@ export const storeProvenance = async (
   return { ...plan, items };
 };
 
+/**
+ * Everything a conversation start does before its transaction: read its files, plan its provenance, and store the
+ * snapshots (see `readConversationFiles`, `planConversationProvenance`, `storeProvenance`).
+ */
+export const prepareConversationProvenance = async (input: {
+  profile: Profile;
+  read: RuntimeFileReader;
+  identity: ServerIdentity;
+  clientBuild: unknown;
+  objects: ObjectStore;
+  signal: AbortSignal;
+}): Promise<ProvenancePlan<StoredObject>> => {
+  const { profile, signal } = input;
+  const files = await readConversationFiles({ profile, read: input.read, signal });
+  return storeProvenance(
+    planConversationProvenance({
+      profile,
+      clientBuild: input.clientBuild,
+      identity: input.identity,
+      files,
+    }),
+    { objects: input.objects, signal },
+  );
+};
+
 /** A stored plan item with the ids of the rows it records: its entry, and for a retained one its artifact and link. */
 export type NamedProvenanceItem =
   | (Extract<ProvenanceItem<StoredObject>, { availability: "unavailable" }> & { entryId: string })
@@ -329,9 +370,19 @@ export const nameProvenance = (
  */
 export const agentPromptObject = (plan: {
   items: readonly ProvenanceItem<StoredObject>[];
-}): StoredObject | null => {
+}): StoredObject | null => retainedObject(plan, "agent_prompt");
+
+/** As `agentPromptObject`, for the worker agent's prompt: null when missing. */
+export const workerPromptObject = (plan: {
+  items: readonly ProvenanceItem<StoredObject>[];
+}): StoredObject | null => retainedObject(plan, "worker_prompt");
+
+const retainedObject = (
+  plan: { items: readonly ProvenanceItem<StoredObject>[] },
+  role: ProvenanceRole,
+): StoredObject | null => {
   for (const item of plan.items)
-    if (item.role === "agent_prompt" && item.availability === "retained") return item.content;
+    if (item.role === role && item.availability === "retained") return item.content;
   return null;
 };
 

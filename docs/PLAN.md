@@ -4,9 +4,7 @@
 
 An open-source client/server voice and text assistant controlling a user-configured host computer through configured agent runtimes. Desktop, phone, and terminal clients share one conversation, used through one active client at a time. Every client takes typed input; desktop and phone clients also take speech and show interactive views. Mia offers explicit device handoff, parallel tasks where tools allow it, and past-conversation retrieval. Remote operation requires the configured host to be awake and online.
 
-Implement the nine testable deliverables below. Client/server separation is foundational from deliverable 1. Each milestone needs a user acceptance demo, relevant automated checks, and an acceptance checkpoint before expanding scope. This is an implementation plan; the planning task does not authorize implementation. Run agents through user-installed Codex, Claude Code, or OpenCode CLIs, reusing their authentication; document prerequisites and detect missing setup rather than assuming a particular developer's environment. Users need only configure the agent runtimes they intend to use.
-
-Deliverable 2 was inserted after D1 was built; the deliverables numbered D2–D8 in older issues and pull requests are now D3–D9.
+Implement the testable deliverables below. Client/server separation is foundational. Each milestone needs a user acceptance demo, relevant automated checks, and an acceptance checkpoint before expanding scope. This is an implementation plan; the planning task does not authorize implementation. Run agents through user-installed Codex, Claude Code, or OpenCode CLIs, reusing their authentication; document prerequisites and detect missing setup rather than assuming a particular developer's environment. Users need only configure the agent runtimes they intend to use.
 
 The project must be usable without the original author's accounts, paths, devices, or private services. Keep credentials, personal configuration, recordings, and logs outside version control; provide generic setup examples. Live service/device acceptance tests use the tester's own configured integrations.
 
@@ -64,17 +62,11 @@ Terms are defined in the [glossary](GLOSSARY.md).
 
 ## Delivery approach
 
-Each deliverable extends a working user journey. Provide one repeatable demo with expected results and test relevant failure cases as soon as the capability appears. Keep an acceptance record identifying each requirement as demonstrated live, verified with a test substitute, or blocked. Missing required capabilities block acceptance; a substitute is not a live pass.
+Deliverables are sequential checkpoints: the maintainer confirms each before the next begins. Each builds on the last by changing it, removing any code the new one no longer needs. Earlier journeys are re-run on the new code; acceptance evidence is attached to the deliverable's pull request, not kept in the repository. A confirmed deliverable's section below is deleted in the last commit of its own pull request. Deliverable numbers stay fixed and are never reused.
 
-Establish shared agent-adapter checks for approval and interruption in deliverable 1 and repeat them for each runtime. Establish UI-adapter content/event checks in deliverable 5. Re-run relevant earlier journeys as capabilities expand. End-to-end evaluation is continuous, not a final milestone.
+Each deliverable extends a working user journey. Provide one repeatable demo with expected results and test relevant failure cases as soon as the capability appears. Its acceptance record identifies each requirement as demonstrated live, verified with a test substitute, or blocked. Missing required capabilities block acceptance; a substitute is not a live pass.
 
-## Deliverable 1 — Prove one agent adapter
-
-Outcome, scope, exclusions, C4 diagrams and implementation sequence: [D1 implementation plan](D1/PLAN.md).
-
-**User acceptance test:** Send a text task, inspect streamed results, approve one controlled MCP call and reject another. Require approval on every call; verify approval cannot be reused for another call or changed arguments. Interrupt a running task and inspect the recorded outcome.
-
-**Pass:** No execution before required approval. New consequential actions are blocked during interruption; in-flight actions that cannot stop are reported honestly. Failures are visible, and unsupported approval policies are not silently weakened. Logs identify the actual agent, prompts, and builds; retained snapshots survive later edits. Use controlled fixtures for consequential tests.
+Repeat the shared agent-adapter checks for approval and interruption for each runtime. Establish UI-adapter content/event checks in deliverable 5. Re-run relevant earlier journeys as capabilities expand. End-to-end evaluation is continuous, not a final milestone.
 
 ## Deliverable 2 — Delegate to worker agents
 
@@ -86,7 +78,7 @@ Replace D1's single agent with a manager agent and worker agents on the D1 runti
 
 ## Deliverable 3 — Add desktop voice and text
 
-Add the voice model (GPT-Live) as the conversational owner of typed and spoken input, and a desktop client with typing, hold-to-speak/release-to-submit, hands-free conversation, text/voice reply mode, concise spoken results, and an explicit interrupt control. Promote the D1 text client to the TUI, a product client whose input also goes through GPT-Live. Until D4 adds handoff, opening a second client is refused with an explanation.
+Add the voice model (GPT-Live) as the conversational owner of typed and spoken input, and a desktop client with typing, hold-to-speak/release-to-submit, hands-free conversation, text/voice reply mode, concise spoken results, and an explicit interrupt control. Promote the text client to the TUI, a product client whose input also goes through GPT-Live. Until D4 adds handoff, opening a second client is refused with an explanation.
 
 **User acceptance test:** Ask a substantive question by voice and a follow-up by typing, approve/reject a tool request through the client, interrupt speech while work is running, and switch to hands-free mode. Switch reply mode from voice to text and back; send typed input while Mia is speaking, then use the explicit interrupt. Repeat the question, approval, and interrupt through the TUI.
 

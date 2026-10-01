@@ -1,5 +1,6 @@
 export { emptySnapshotTables } from "./schema.ts";
 export type {
+  AgentRole,
   ApprovalRow,
   ArtifactKind,
   CommandReply,
@@ -14,6 +15,8 @@ export type {
   ProvenanceRole,
   TaskRow,
   ToolCallRow,
+  ToolLeaseRow,
+  TurnRow,
 } from "./schema.ts";
 export { Catalog, defaultStateDir, newId, nowIso } from "./catalog.ts";
 export type { IdPrefix, NewId } from "./catalog.ts";
@@ -26,12 +29,14 @@ export {
   listConversations,
   snapshotConversation,
   taskViews,
+  turnViews,
 } from "./queries.ts";
 export type {
   ConversationSnapshot,
   ConversationSummary,
   DiagnosticsView,
   TaskView,
+  TurnView,
 } from "./queries.ts";
 export { readConversationProvenance } from "./provenance-read.ts";
 export type { ProvenanceContent } from "./provenance-read.ts";

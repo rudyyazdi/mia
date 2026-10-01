@@ -140,7 +140,7 @@ const bindingKey = (binding: {
  * The last one keeps a call's first event from moving. A later stream line announcing the same
  * binding re-points the call's `proposal_event_id` at itself, and without it the earlier proposal,
  * which may be the call's first event, would drop out of the call and move its entry past a
- * sequence a view already showed. Events recorded before the call exists (`tool_proposal_started`)
+ * sequence a view already showed. Events recorded before the call exists (`tool_refused`)
  * stay with the task, for the same reason.
  */
 const toolCallOwner = (

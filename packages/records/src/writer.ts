@@ -13,10 +13,12 @@ import {
   type TaskStatus,
   type ToolCallPolicy,
   type ToolCallStatus,
+  type TurnStatus,
 } from "@mia/protocol";
 import { Catalog, newId, nowIso } from "./catalog.ts";
 import { ObjectStore, type StoredObject } from "./objects.ts";
 import type {
+  AgentRole,
   ArtifactKind,
   CaptureStatus,
   ClientKind,
@@ -184,6 +186,18 @@ export const conversationDirectory = (input: {
  * records it returns carry that time rather than whenever the writer runs. The rows named here, and clients and
  * connections, stamp themselves.
  */
+/** The runtime's usage report as a row stores it, redacted. */
+const usageJson = (usage: ExecutionUsage): string =>
+  JSON.stringify(
+    redactValue({
+      usage: usage.usage,
+      total_cost_usd: usage.totalCostUsd,
+      duration_ms: usage.durationMs,
+      duration_api_ms: usage.durationApiMs,
+      num_turns: usage.numTurns,
+    }),
+  );
+
 export class RecordWriter {
   readonly objects: ObjectStore;
 
@@ -420,12 +434,17 @@ export class RecordWriter {
     this.catalog.update("conversations", id, { status: fields.status });
   }
 
+  /**
+   * Records a task: one worker agent's work, linked (with `delegation`) to the turn that delegated it and to the
+   * runtime's own ids for it.
+   */
   createTask(input: {
     id: string;
     createdAt: string;
     conversationId: string;
     text: string;
     clientId: string | null;
+    delegation?: { turnId: string | null; runtimeTaskId: string; delegationCallId: string };
   }): void {
     this.catalog.insert("tasks", {
       id: input.id,
@@ -434,6 +453,9 @@ export class RecordWriter {
       created_at: input.createdAt,
       text: redactString(input.text),
       client_id: input.clientId,
+      turn_id: input.delegation?.turnId ?? null,
+      runtime_task_id: input.delegation?.runtimeTaskId ?? null,
+      delegation_call_id: input.delegation?.delegationCallId ?? null,
     });
   }
 
@@ -441,28 +463,29 @@ export class RecordWriter {
     this.catalog.update("tasks", id, { status: fields.status, finished_at: fields.finishedAt });
   }
 
+  /** A manager agent's execution runs no task (`taskId` null); every other role runs the task it names. */
   createExecution(input: {
     id: string;
     startedAt: string;
-    taskId: string;
+    taskId: string | null;
+    agentRole: AgentRole;
     conversationId: string;
     runtimeIdentity: string;
     runtimeConversationId: string;
     requestedModel: string;
     requestedEffort: Effort;
     provenanceSetId: string | null;
-    executionEpoch: number;
   }): void {
     this.catalog.insert("executions", {
       id: input.id,
       task_id: input.taskId,
+      agent_role: input.agentRole,
       conversation_id: input.conversationId,
       runtime_identity: input.runtimeIdentity,
       runtime_conversation_id: input.runtimeConversationId,
       requested_model: input.requestedModel,
       requested_effort: input.requestedEffort,
       provenance_set_id: input.provenanceSetId,
-      execution_epoch: input.executionEpoch,
       status: "running",
       started_at: input.startedAt,
     });
@@ -489,19 +512,74 @@ export class RecordWriter {
         fields.effortEvidence === undefined
           ? undefined
           : JSON.stringify(redactValue(fields.effortEvidence)),
-      usage:
-        fields.usage === undefined
-          ? undefined
-          : JSON.stringify(
-              redactValue({
-                usage: fields.usage.usage,
-                total_cost_usd: fields.usage.totalCostUsd,
-                duration_ms: fields.usage.durationMs,
-                duration_api_ms: fields.usage.durationApiMs,
-                num_turns: fields.usage.numTurns,
-              }),
-            ),
+      usage: fields.usage === undefined ? undefined : usageJson(fields.usage),
     });
+  }
+
+  // ---- turns and exclusive-tool leases ----
+
+  createTurn(input: {
+    id: string;
+    conversationId: string;
+    executionId: string;
+    startedAt: string;
+    cause: { kind: "user_input" } | { kind: "task_end"; taskId: string };
+  }): void {
+    this.catalog.insert("turns", {
+      id: input.id,
+      conversation_id: input.conversationId,
+      execution_id: input.executionId,
+      cause: input.cause.kind,
+      caused_by_task_id: input.cause.kind === "task_end" ? input.cause.taskId : null,
+      status: "running",
+      started_at: input.startedAt,
+    });
+  }
+
+  updateTurn(
+    id: string,
+    fields: { status?: TurnStatus; finishedAt?: string | null; usage?: ExecutionUsage },
+  ): void {
+    this.catalog.update("turns", id, {
+      status: fields.status,
+      finished_at: fields.finishedAt,
+      usage: fields.usage === undefined ? undefined : usageJson(fields.usage),
+    });
+  }
+
+  /**
+   * Records `taskId` as holding exclusive tool `toolIdentity` for one call, under the tool's next fence. The partial
+   * unique index refuses a second unreleased lease of the tool, so the insert throws and the transition recording it
+   * fails rather than let two tasks hold it.
+   */
+  acquireLease(input: {
+    id: string;
+    conversationId: string;
+    toolIdentity: string;
+    taskId: string;
+    toolCallId: string;
+    acquiredAt: string;
+  }): { fence: number } {
+    const fence =
+      (this.catalog.get<{ fence: number | null }>(
+        "SELECT MAX(fence) AS fence FROM tool_leases WHERE conversation_id = ? AND tool_identity = ?",
+        input.conversationId,
+        input.toolIdentity,
+      )?.fence ?? 0) + 1;
+    this.catalog.insert("tool_leases", {
+      id: input.id,
+      conversation_id: input.conversationId,
+      tool_identity: input.toolIdentity,
+      fence,
+      task_id: input.taskId,
+      tool_call_id: input.toolCallId,
+      acquired_at: input.acquiredAt,
+    });
+    return { fence };
+  }
+
+  releaseLease(id: string, releasedAt: string): void {
+    this.catalog.update("tool_leases", id, { released_at: releasedAt });
   }
 
   // ---- events ----
@@ -591,13 +669,11 @@ export class RecordWriter {
     id: string;
     requestedAt: string;
     toolCallId: string;
-    executionEpoch: number;
     requestingEventId: string | null;
   }): void {
     this.catalog.insert("approvals", {
       id: input.id,
       tool_call_id: input.toolCallId,
-      execution_epoch: input.executionEpoch,
       status: "pending",
       requesting_event_id: input.requestingEventId,
       requested_at: input.requestedAt,

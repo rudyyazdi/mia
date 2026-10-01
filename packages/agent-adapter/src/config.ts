@@ -57,12 +57,10 @@ export const RuntimeConfigSchema = z
     effort: EffortSchema,
     /** Agent working directory (created if missing). Never a personal path in committed examples. */
     workingDirectory: z.string().min(1),
-    /** Built-in Claude Code tools to enable. Empty array means none. */
-    builtinTools: z.array(z.string()),
     mcpServers: z.record(z.string().regex(/^[A-Za-z0-9_-]+$/), McpServerConfigSchema),
     /**
      * Mia policy per fully qualified tool identity (mcp__<server>__<tool>).
-     * allow: permitted without prompting, still subject to the action gate.
+     * allow: permitted without prompting, still refused once its task is being stopped.
      * ask: requires an explicit per-call user decision.
      * deny: rejected before any prompt.
      * Tools not listed are denied with a visible error.
@@ -71,8 +69,25 @@ export const RuntimeConfigSchema = z
       z.string().regex(/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_.-]+$/),
       ToolPolicySchema,
     ),
-    /** Mia-owned agent instructions appended to the runtime's system prompt. */
+    /** Mia-owned manager-agent instructions appended to the runtime's system prompt. */
     agentPromptFile: z.string().min(1),
+    /**
+     * The worker agent the manager agent delegates every tool call to. It may use every tool the policy lists and
+     * cannot start or stop a worker agent.
+     */
+    workerAgent: z
+      .object({
+        /** When the manager agent should delegate to it, as the runtime shows the manager agent. */
+        description: z.string().min(1),
+        /** Mia-owned worker-agent instructions. */
+        promptFile: z.string().min(1),
+      })
+      .strict(),
+    /**
+     * Tools only one worker agent may use at a time, such as computer use: the engine refuses a second concurrent
+     * call to one. Each must be a tool the policy lists.
+     */
+    exclusiveTools: z.array(z.string()).default([]),
     /** Directories from which tool-result-declared artifacts may be collected. */
     outputDirectories: z.array(z.string()),
     /** Extra environment for the runtime process (never credentials). */
@@ -127,15 +142,15 @@ export const validateRuntimeConfig = (config: RuntimeConfig): void => {
       );
     }
   }
+  for (const identity of config.exclusiveTools) {
+    if (!Object.hasOwn(config.toolPolicy, identity))
+      throw new ConfigurationError(
+        `exclusiveTools names ${identity}, which toolPolicy does not list`,
+      );
+  }
   if (Object.hasOwn(config.mcpServers, "mia_approval")) {
     throw new ConfigurationError(
       `mcpServers may not define "mia_approval"; that name is reserved for the approval bridge`,
-    );
-  }
-  for (const tool of config.builtinTools) {
-    // Built-in tools are not routed through the approval bridge by rule; D1 has proven gating only for MCP tools.
-    throw new ConfigurationError(
-      `builtinTools includes "${tool}", but D1 has no enforceable approval boundary for built-in tools; remove it or add a proven adapter boundary`,
     );
   }
   for (const [key, value] of Object.entries(config.env)) {

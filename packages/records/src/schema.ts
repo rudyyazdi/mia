@@ -11,11 +11,17 @@ import type {
   TaskStatus,
   ToolCallPolicy,
   ToolCallStatus,
+  TurnCause,
+  TurnStatus,
 } from "@mia/protocol";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
-/** Logical records from docs/D1/CONVERSATION-RECORDS.md. Foreign keys are enforced per connection (see catalog.ts). */
+/**
+ * The catalog's records. Foreign keys are enforced per connection (see catalog.ts). A command id is answered with its
+ * stored reply when resent and refused with a different payload; an approval authorizes one exact call binding once;
+ * events are deduplicated only by a producer's own event id, never by content; unknown timing stays unknown.
+ */
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -91,6 +97,23 @@ CREATE TABLE IF NOT EXISTS client_connections (
 );
 CREATE INDEX IF NOT EXISTS client_connections_client ON client_connections(client_id, connected_at, id);
 
+-- One run of the manager agent, started by user input or by a task's end (docs/GLOSSARY.md).
+CREATE TABLE IF NOT EXISTS turns (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  execution_id TEXT NOT NULL REFERENCES executions(id),
+  cause TEXT NOT NULL CHECK (cause IN ('user_input','task_end')),
+  caused_by_task_id TEXT REFERENCES tasks(id),
+  status TEXT NOT NULL CHECK (status IN ('running','completed','failed','interrupted')),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  usage TEXT,
+  CHECK ((cause = 'task_end') = (caused_by_task_id IS NOT NULL)),
+  UNIQUE(conversation_id, id)
+);
+CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, started_at, id);
+
+-- A task is one worker agent's work, linked to the turn that delegated it.
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -99,14 +122,21 @@ CREATE TABLE IF NOT EXISTS tasks (
   finished_at TEXT,
   text TEXT NOT NULL,
   client_id TEXT REFERENCES clients(id),
-  UNIQUE(conversation_id, id)
+  turn_id TEXT REFERENCES turns(id),
+  runtime_task_id TEXT,
+  delegation_call_id TEXT,
+  UNIQUE(conversation_id, id),
+  UNIQUE(conversation_id, runtime_task_id)
 );
 CREATE INDEX IF NOT EXISTS tasks_conversation ON tasks(conversation_id, created_at, id);
+CREATE INDEX IF NOT EXISTS tasks_turn ON tasks(turn_id, created_at, id);
 
+-- A manager agent's execution runs no task; a worker agent's runs one.
 CREATE TABLE IF NOT EXISTS executions (
   id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL,
+  task_id TEXT,
   conversation_id TEXT NOT NULL,
+  agent_role TEXT NOT NULL CHECK (agent_role IN ('manager','worker')),
   runtime_identity TEXT NOT NULL,
   runtime_conversation_id TEXT,
   requested_model TEXT NOT NULL,
@@ -115,11 +145,11 @@ CREATE TABLE IF NOT EXISTS executions (
   reported_effort TEXT,
   effort_evidence TEXT,
   provenance_set_id TEXT REFERENCES provenance_sets(id),
-  execution_epoch INTEGER NOT NULL,
   status TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT,
   usage TEXT,
+  CHECK ((agent_role = 'manager') = (task_id IS NULL)),
   FOREIGN KEY(conversation_id, task_id) REFERENCES tasks(conversation_id, id)
 );
 CREATE INDEX IF NOT EXISTS executions_task ON executions(task_id, started_at, id);
@@ -196,7 +226,6 @@ CREATE INDEX IF NOT EXISTS tool_calls_task ON tool_calls(task_id, proposal_event
 CREATE TABLE IF NOT EXISTS approvals (
   id TEXT PRIMARY KEY,
   tool_call_id TEXT NOT NULL REFERENCES tool_calls(id),
-  execution_epoch INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','invalidated','expired')),
   reason TEXT,
   requesting_event_id TEXT REFERENCES events(id),
@@ -204,9 +233,24 @@ CREATE TABLE IF NOT EXISTS approvals (
   decision_client_id TEXT,
   requested_at TEXT NOT NULL,
   consumed_at TEXT,
-  UNIQUE(tool_call_id, execution_epoch)
+  UNIQUE(tool_call_id)
 );
 CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(status, id) WHERE status = 'pending';
+
+-- Who holds an exclusive tool. At most one unreleased lease per tool and conversation; each new lease of a tool
+-- takes the next fence, so a late result of a released lease is recognisable by its older fence.
+CREATE TABLE IF NOT EXISTS tool_leases (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  tool_identity TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  tool_call_id TEXT NOT NULL REFERENCES tool_calls(id),
+  acquired_at TEXT NOT NULL,
+  released_at TEXT,
+  UNIQUE(conversation_id, tool_identity, fence)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tool_leases_held ON tool_leases(conversation_id, tool_identity) WHERE released_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS diagnostics (
   id TEXT PRIMARY KEY,
@@ -237,7 +281,6 @@ CREATE TABLE IF NOT EXISTS artifact_links (
   CHECK (relation <> 'event_payload' OR event_id IS NOT NULL),
   CHECK (relation <> 'tool_result' OR tool_call_id IS NOT NULL),
   CHECK (relation <> 'diagnostic' OR diagnostic_id IS NOT NULL),
-  CHECK (relation <> 'runtime_transcript' OR task_id IS NOT NULL),
   FOREIGN KEY(conversation_id, task_id) REFERENCES tasks(conversation_id, id)
 );
 CREATE INDEX IF NOT EXISTS artifact_links_conversation ON artifact_links(conversation_id, artifact_id);
@@ -265,10 +308,12 @@ export const EXPORT_TABLES = [
   "client_connections",
   "tasks",
   "executions",
+  "turns",
   "events",
   "commands",
   "tool_calls",
   "approvals",
+  "tool_leases",
   "diagnostics",
   "artifact_links",
   "artifact_dependencies",
@@ -281,6 +326,9 @@ export type ExportTable = (typeof EXPORT_TABLES)[number];
 
 export type ConversationStatus = "active" | "closed";
 export type ExecutionStatus = "running" | "completed" | "failed" | "killed";
+/** Which agent an execution ran: the manager agent or one of its worker agents. */
+export type AgentRole = "manager" | "worker";
+
 export type ClientKind = "text-client";
 /**
  * `received` is the pending state between recording a command and finishing it; the others are the outcome
@@ -302,26 +350,36 @@ export type JournalEventType =
   | ServerEventType
   | "provenance_recorded"
   | "captured_in_debug_mode"
-  | "task_submitted"
   | "client_diagnostics"
   | "client_disconnected"
   | "tool_dispatched"
-  | "tool_proposal_started"
   | "tool_proposed"
   | "tool_result"
   | "tool_result_unmatched"
   | "mcp_request"
   | "mcp_response"
-  | "policy_evaluated"
   | "assistant_message"
   | "runtime_started"
   | "runtime_init"
   | "runtime_result"
   | "runtime_stderr"
   | "runtime_exit"
-  | "artifact_registered";
+  | "artifact_registered"
+  | "message_received"
+  | "message_undelivered"
+  | "worker_started"
+  | "worker_ended"
+  | "tool_refused"
+  | "tool_unattributed"
+  | "lease_acquired"
+  | "lease_released"
+  | "stop_requested"
+  | "message_taken"
+  | "turn_reports_tasks"
+  | "delegation_unstarted";
 export type ProvenanceRole =
   | "agent_prompt"
+  | "worker_prompt"
   | "runtime_instructions"
   | "configuration"
   | "tool_contracts"
@@ -417,12 +475,39 @@ export interface TaskRow {
   finished_at: string | null;
   text: string;
   client_id: string | null;
+  turn_id: string | null;
+  runtime_task_id: string | null;
+  delegation_call_id: string | null;
+}
+
+export interface TurnRow {
+  id: string;
+  conversation_id: string;
+  execution_id: string;
+  cause: TurnCause;
+  caused_by_task_id: string | null;
+  status: TurnStatus;
+  started_at: string;
+  finished_at: string | null;
+  usage: string | null;
+}
+
+export interface ToolLeaseRow {
+  id: string;
+  conversation_id: string;
+  tool_identity: string;
+  fence: number;
+  task_id: string;
+  tool_call_id: string;
+  acquired_at: string;
+  released_at: string | null;
 }
 
 export interface ExecutionRow {
   id: string;
-  task_id: string;
+  task_id: string | null;
   conversation_id: string;
+  agent_role: AgentRole;
   runtime_identity: string;
   runtime_conversation_id: string | null;
   requested_model: string;
@@ -432,7 +517,6 @@ export interface ExecutionRow {
   reported_effort: string | null;
   effort_evidence: string | null;
   provenance_set_id: string | null;
-  execution_epoch: number;
   status: ExecutionStatus;
   started_at: string;
   ended_at: string | null;
@@ -499,7 +583,6 @@ export interface ToolCallRow {
 export interface ApprovalRow {
   id: string;
   tool_call_id: string;
-  execution_epoch: number;
   status: ApprovalStatus;
   reason: string | null;
   requesting_event_id: string | null;
@@ -564,10 +647,12 @@ export interface SnapshotTables {
   client_connections: ClientConnectionRow[];
   tasks: TaskRow[];
   executions: ExecutionRow[];
+  turns: TurnRow[];
   events: EventRow[];
   commands: CommandRow[];
   tool_calls: ToolCallRow[];
   approvals: ApprovalRow[];
+  tool_leases: ToolLeaseRow[];
   diagnostics: DiagnosticsRow[];
   artifact_links: ArtifactLinkRow[];
   artifact_dependencies: ArtifactDependencyRow[];
@@ -583,10 +668,12 @@ export const emptySnapshotTables = (): SnapshotTables => ({
   client_connections: [],
   tasks: [],
   executions: [],
+  turns: [],
   events: [],
   commands: [],
   tool_calls: [],
   approvals: [],
+  tool_leases: [],
   diagnostics: [],
   artifact_links: [],
   artifact_dependencies: [],

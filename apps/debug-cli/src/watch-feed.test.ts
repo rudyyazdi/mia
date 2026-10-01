@@ -28,13 +28,16 @@ const conversation = (): WatchRows =>
     approvals: [approvalRow()],
     events: [
       eventRow({ sequence: 1, type: "conversation_started" }),
-      eventRow({ sequence: 2, type: "task_submitted", task_id: "t1" }),
+      eventRow({ sequence: 2, type: "message_received", task_id: "t1" }),
       eventRow({ sequence: 3, type: "tool_proposed", task_id: "t1", execution_id: "x1" }),
     ],
   });
 
-/** The fixture's calls go to d1, which writes a body log unless a test says otherwise. */
-const FIXTURE_SERVERS: BodyLogServers = { status: "known", servers: new Map([["d1", "body_log"]]) };
+/** The fixture's calls go to the fixture server, which writes a body log unless a test says otherwise. */
+const FIXTURE_SERVERS: BodyLogServers = {
+  status: "known",
+  servers: new Map([["fixture", "body_log"]]),
+};
 
 /** One poll, its messages read out as the server sends them. */
 const poll = (rows: WatchRows, sent: Sent, servers: BodyLogServers = FIXTURE_SERVERS) => {
@@ -74,7 +77,7 @@ describe("messagesAfter", () => {
   it("sends only the entries after the last sequence sent", () => {
     const rows = conversation();
     const { sent } = poll(rows, NOTHING_SENT);
-    rows.events.push(eventRow({ sequence: 4, type: "text_delta", task_id: "t1" }));
+    rows.events.push(eventRow({ sequence: 4, type: "tool_result", task_id: "t1" }));
     const next = poll(rows, sent);
     expect(next.messages.map(placement)).toEqual(["event under task:t1"]);
     expect(next.messages[0]).toMatchObject({ view: { summary: expect.stringContaining("#4 ") } });

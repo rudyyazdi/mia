@@ -1,6 +1,6 @@
 import { REDACTED } from "@mia/protocol";
 import { describe, expect, it } from "vitest";
-import { ClaudeTranslator } from "./claude-translate.ts";
+import { ClaudeTranslator, taskEventsOf } from "./claude-translate.ts";
 import { parseStreamLine, type RuntimeMessage } from "./stream.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -18,12 +18,12 @@ const init = {
   subtype: "init",
   session_id: "session",
   model: "claude-test",
-  tools: ["mcp__d1__read"],
-  mcp_servers: [{ name: "d1", status: "connected" }],
+  tools: ["mcp__fixture__read"],
+  mcp_servers: [{ name: "fixture", status: "connected" }],
   claude_code_version: "2.1.0",
 };
 
-const toolUse = { type: "tool_use", id: "toolu_1", name: "mcp__d1__read", input: { key: 1 } };
+const toolUse = { type: "tool_use", id: "toolu_1", name: "mcp__fixture__read", input: { key: 1 } };
 
 describe("ClaudeTranslator", () => {
   it("reports the init model and keeps the whole init message as evidence", () => {
@@ -49,13 +49,14 @@ describe("ClaudeTranslator", () => {
       event: { type: "content_block_start", content_block: { ...toolUse, input: {} } },
     };
     expect(translator.translate(message(delta), now)).toEqual([
-      { type: "text_delta", text: "hi", at },
+      { type: "text_delta", text: "hi", parentCallId: null, at },
     ]);
     expect(translator.translate(message(start), now)).toEqual([
       {
         type: "tool_proposed",
         runtimeCallId: "toolu_1",
-        toolIdentity: "mcp__d1__read",
+        parentCallId: null,
+        toolIdentity: "mcp__fixture__read",
         arguments: {},
         complete: false,
         at,
@@ -74,7 +75,8 @@ describe("ClaudeTranslator", () => {
     expect(first[1]).toEqual({
       type: "tool_proposed",
       runtimeCallId: "toolu_1",
-      toolIdentity: "mcp__d1__read",
+      parentCallId: null,
+      toolIdentity: "mcp__fixture__read",
       arguments: { key: 1 },
       complete: true,
       at,
@@ -101,6 +103,7 @@ describe("ClaudeTranslator", () => {
       {
         type: "tool_result",
         runtimeCallId: "toolu_1",
+        parentCallId: null,
         isError: false,
         content: "done",
         raw: { stdout: "done" },
@@ -109,6 +112,7 @@ describe("ClaudeTranslator", () => {
       {
         type: "tool_result",
         runtimeCallId: "toolu_2",
+        parentCallId: null,
         isError: true,
         content: "denied",
         raw: { stdout: "done" },
@@ -144,5 +148,70 @@ describe("ClaudeTranslator", () => {
       now,
     );
     expect(result).toMatchObject({ content: `got ${REDACTED}`, raw: { stdout: REDACTED } });
+  });
+});
+
+describe("taskEventsOf", () => {
+  it("reports a worker agent's start and end from the runtime's task messages", () => {
+    const started = message({
+      type: "system",
+      subtype: "task_started",
+      task_id: "a1",
+      tool_use_id: "toolu_delegation",
+      description: "read",
+      prompt: "call fixture.read",
+      is_backgrounded: true,
+      subagent_type: "mia-worker",
+    });
+    const ended = message({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "a1",
+      tool_use_id: "toolu_delegation",
+      status: "completed",
+      summary: "read 0",
+    });
+    expect(taskEventsOf(started, now)).toEqual([
+      {
+        type: "worker_started",
+        runtimeTaskId: "a1",
+        delegationCallId: "toolu_delegation",
+        description: "read",
+        prompt: "call fixture.read",
+        background: true,
+        at,
+      },
+    ]);
+    expect(taskEventsOf(ended, now)).toEqual([
+      {
+        type: "worker_ended",
+        runtimeTaskId: "a1",
+        delegationCallId: "toolu_delegation",
+        status: "completed",
+        summary: "read 0",
+        at,
+      },
+    ]);
+  });
+
+  it("reports nothing for other messages, including task progress", () => {
+    expect(taskEventsOf(message(init), now)).toEqual([]);
+    expect(
+      taskEventsOf(message({ type: "system", subtype: "task_progress", task_id: "a1" }), now),
+    ).toEqual([]);
+  });
+
+  it("attributes a worker agent's call to its delegation call", () => {
+    const translated = new ClaudeTranslator().translate(
+      message({
+        type: "assistant",
+        parent_tool_use_id: "toolu_delegation",
+        message: { role: "assistant", content: [toolUse] },
+      }),
+      now,
+    );
+    expect(translated).toContainEqual(
+      expect.objectContaining({ type: "tool_proposed", parentCallId: "toolu_delegation" }),
+    );
   });
 });

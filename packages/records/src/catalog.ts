@@ -22,10 +22,12 @@ export type IdPrefix =
   | "diag"
   | "evt"
   | "exec"
+  | "lease"
   | "link"
   | "pe"
   | "prov"
-  | "task";
+  | "task"
+  | "turn";
 
 /** Draws a fresh id for a row of one kind: `newId`, or a caller's own. */
 export type NewId = (prefix: IdPrefix) => string;

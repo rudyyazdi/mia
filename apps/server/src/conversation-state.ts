@@ -1,71 +1,115 @@
-import type { TaskStatus, ToolCallPolicy, ToolCallStatus } from "@mia/protocol";
+import type { TaskStatus, ToolCallPolicy, ToolCallStatus, TurnCause } from "@mia/protocol";
 
 /**
- * What the engine holds in memory about the active conversation, as one immutable value: the conversation, its
- * task, the task's call revisions and pending approvals, and the epoch. Memory follows the records, so a
- * transition builds the next value beside its records and the conversation's kernel machine replaces the whole
- * value only once they commit; nothing here is ever mutated, so a failed commit leaves the value it started from
- * standing, and a callback that outlives a transition reads the value as it is now by id, never a stale copy it
- * kept. The runtime a task's turn runs in (its handle, the promise of its end) is a resource, not state, and lives
- * with the engine.
+ * What the engine holds in memory about the active conversation, as one immutable value: its manager agent's
+ * session, the turn that session is running, the input and task ends waiting for turns, and every running task with
+ * its calls, approvals and exclusive-tool leases. Memory follows the records: a transition builds the next value
+ * beside its records, and the conversation's kernel machine replaces the whole value only once they commit, so
+ * nothing here is ever mutated. The runtime session itself (its process, the gate's held calls) is a resource the
+ * engine owns, not state.
  */
 export interface ConversationState {
   readonly id: string;
   readonly runtimeConversationId: string;
   readonly provenanceSetId: string;
   readonly directory: string;
+  /** The retained manager-agent prompt object every session appends; null when it was missing at start. */
+  readonly managerPromptFile: string | null;
   /**
-   * The retained agent prompt object every turn of this conversation appends; null when the prompt file was missing
-   * at start, so provenance recorded it unavailable and no turn appends one.
+   * The worker agent's instructions, the bytes of the retained prompt object as text: the runtime takes a subagent's
+   * prompt as text. Null when the prompt was missing at start, and then no session can open.
    */
-  readonly promptFile: string | null;
-  readonly turnCount: number;
-  /**
-   * A runtime has started this conversation's session, so the next turn resumes it instead of creating it. Set
-   * when a turn's runtime_init commits, not from the turn count: a turn whose runtime never spawned (a failed
-   * launch, or an interruption before spawn) leaves no session to resume. Keyed off the init event rather than
-   * the spawn, so a runtime that exits before its init (rejecting its arguments or settings) leaves the session
-   * to be created again; one that exits after init but before it persists the session still sets it. Only a
-   * committed init sets it, as memory follows the records: if that commit fails, the next turn tries to create a
-   * session that exists and fails, and the turn after resumes once its init commits.
-   */
+  readonly workerPrompt: string | null;
+  /** Sessions opened so far; the next one takes this number plus one for its files. */
+  readonly sessionCount: number;
+  /** A session has started the runtime's conversation, so the next session resumes it instead of creating it. */
   readonly sessionStarted: boolean;
-  readonly epoch: number;
-  /** Mia-authored note carried into the next runtime turn after an interruption or unknown outcome. */
+  /** The manager agent's running session, or null while none is open. */
+  readonly session: SessionState | null;
+  /** A Mia note carried into the next message after a stop left outcomes the manager agent did not see. */
   readonly pendingNote: string | null;
-  /** The one task the conversation runs, from its submission until its turn has ended and been recorded. */
-  readonly task: TaskState | null;
+  /**
+   * The recorded messages sent to the session that no turn has taken yet, oldest first (MAX_QUEUED_INPUTS). The
+   * runtime replays each one a turn takes (`input_taken`), which removes it, however many a turn takes.
+   */
+  readonly queuedInputs: readonly QueuedInput[];
+  /**
+   * The tasks whose end no turn has reported yet, oldest first (MAX_RUNNING_TASKS: a turn that reports task ends
+   * reports all of them, and an end beyond the bound drops the oldest unreported one).
+   */
+  readonly endedTasks: readonly string[];
+  /**
+   * The turn the session is running, or null between turns. A turn begins at the runtime's init but is recorded only
+   * once its cause shows: a replayed message makes it the user's, anything else first makes it a report of task ends.
+   */
+  readonly turn: TurnState | null;
+  /** The runtime began a turn whose cause has not shown yet: its init's evidence, to record with the turn. */
+  readonly openingTurn: { readonly initEvidence: unknown; readonly model: string } | null;
+  /**
+   * The delegations the gate allowed whose worker agent the runtime has not reported starting yet, by delegation call
+   * id: they count against MAX_RUNNING_TASKS, so parallel delegations cannot exceed it.
+   */
+  readonly pendingDelegations: ReadonlySet<string>;
+  /**
+   * The released calls of tasks that ended before their result arrived, by runtime call id (MAX_UNSETTLED_CALLS):
+   * a late result still settles them and frees the exclusive tool they hold.
+   */
+  readonly unsettledCalls: ReadonlyMap<string, UnsettledCall>;
+  /** Every running task by id, in the order they started (see MAX_RUNNING_TASKS). */
+  readonly tasks: ReadonlyMap<string, TaskState>;
+  /** The exclusive tools held, by tool identity: the lease and the call holding it. */
+  readonly leases: ReadonlyMap<string, LeaseState>;
+}
+
+export interface QueuedInput {
+  /** The message_received event that recorded the message. */
+  readonly eventId: string;
+  /** The UUID the message was sent to the runtime under, which it replays when a turn takes the message. */
+  readonly runtimeMessageId: string;
+}
+
+/** A released call whose task ended before its result arrived. */
+export interface UnsettledCall {
+  readonly taskId: string;
+  readonly executionId: string;
+  readonly callId: string;
+  readonly toolIdentity: string;
+}
+
+export interface SessionState {
+  /** The manager agent's execution this session runs as. */
+  readonly executionId: string;
+  /** `open` until a stop of every task asks the session to end; its end is recorded when the runtime exits. */
+  readonly status: "open" | "stopping";
+}
+
+export interface TurnState {
+  readonly id: string;
+  readonly cause: TurnCause;
+  /** The first task whose end this turn reports; null for a turn started by user input. */
+  readonly causedByTaskId: string | null;
 }
 
 export interface TaskState {
   readonly id: string;
+  /** The worker agent's execution. */
   readonly executionId: string;
-  readonly epoch: number;
+  /** The runtime's id for the worker agent: the gate hook's `agent_id` for its calls. */
+  readonly runtimeTaskId: string;
+  readonly delegationCallId: string;
+  readonly turnId: string | null;
   readonly status: TaskStatus;
+  /** Closed by a stop of this task or of every task: no call of this task is allowed or released from then on. */
   readonly gateOpen: boolean;
-  readonly interrupted: boolean;
-  /**
-   * The runtime's turn has ended and finishTurn is recording it. Memory only: the task stays running in the
-   * records until finishTurn commits, but nothing can be released to or interrupted in a runtime that is gone.
-   */
-  readonly runtimeEnded: boolean;
-  /** Every binding revision under each runtime call id, oldest first, in the order the ids were first seen. */
-  readonly calls: ReadonlyMap<string, readonly CallState[]>;
-  /**
-   * The id of the call each pending approval holds, keyed by approval id in the order the approvals were requested;
-   * that order is the order a disconnect lists them in and an interruption resolves them in.
-   */
+  /** Every call the worker agent asked the gate about, by tool call id, in the order it asked (MAX_CALLS_PER_TASK). */
+  readonly calls: ReadonlyMap<string, CallState>;
+  /** The id of the call each pending approval holds, keyed by approval id, in the order they were requested. */
   readonly pendingApprovals: ReadonlyMap<string, string>;
-  /** The ids of the calls whose held approval prompt the runtime dropped before a decision; never released. */
-  readonly abandoned: readonly string[];
-  readonly clientId: string;
-  readonly reportedModel: string | null;
 }
 
 export interface CallState {
   readonly id: string;
   readonly runtimeCallId: string;
-  readonly revision: number;
   readonly toolIdentity: string;
   readonly digest: string;
   readonly redactedArguments: unknown;
@@ -74,87 +118,92 @@ export interface CallState {
   readonly approvalId: string | null;
 }
 
-/** Every revision of every call of the task, in the order `calls` holds them. */
-export const callsOf = (task: TaskState): CallState[] => [
-  ...task.calls.values().flatMap((revisions) => revisions),
-];
-
-/** The revision `callId` names, if the task has it. */
-export const callById = (task: TaskState, callId: string): CallState | undefined =>
-  callsOf(task).find((call) => call.id === callId);
-
-/** The call a pending approval holds, or undefined when `approvalId` is not pending for this task. */
-export const pendingCall = (task: TaskState, approvalId: string): CallState | undefined => {
-  const callId = task.pendingApprovals.get(approvalId);
-  return callId === undefined ? undefined : callById(task, callId);
-};
-
-/** Pending approvals the task has besides `approvalId`: what is left once that one is resolved. */
-export const otherPending = (task: TaskState, approvalId: string | null): number =>
-  task.pendingApprovals.size -
-  (approvalId !== null && task.pendingApprovals.has(approvalId) ? 1 : 0);
+export interface LeaseState {
+  readonly id: string;
+  readonly taskId: string;
+  readonly callId: string;
+}
 
 /**
- * The state with its task replaced by `update` of it. The task must be the one `taskId` names: a transition only
- * changes the task it was decided for, so any other is a bug, and throwing fails its commit rather than let memory
- * drift from the records.
+ * How many tasks may run at once. A delegation beyond it is refused at the gate, so the runtime never starts a worker
+ * agent Mia would not hold a task for; far above what one conversation runs in parallel.
  */
+export const MAX_RUNNING_TASKS = 16;
+
+/**
+ * How many messages may wait for a turn at once. A message beyond it is refused as busy: the session reads one turn
+ * at a time, and a longer queue would only hold input the person cannot see being worked on.
+ */
+export const MAX_QUEUED_INPUTS = 16;
+
+/** How many calls one task may ask about; a call beyond it is denied, which bounds a worker agent that keeps asking. */
+export const MAX_CALLS_PER_TASK = 256;
+
+/**
+ * How many released calls of ended tasks may wait for their result at once. Beyond it the oldest is given up on: its
+ * outcome stays unknown, and an exclusive tool it held stays leased for the conversation, as the call may still run.
+ */
+export const MAX_UNSETTLED_CALLS = 64;
+
+/** The task a worker agent's runtime id names, if it is running. */
+export const taskByRuntimeId = (
+  state: ConversationState,
+  runtimeTaskId: string,
+): TaskState | undefined =>
+  state.tasks.values().find((task) => task.runtimeTaskId === runtimeTaskId);
+
+/** The call a result names: a running task's, or an unsettled call of an ended task. */
+export type ResultTarget =
+  | { kind: "running"; task: TaskState; callId: string; released: boolean; toolIdentity: string }
+  | { kind: "unsettled"; call: UnsettledCall };
+
+export const resultTarget = (
+  state: ConversationState,
+  runtimeCallId: string,
+): ResultTarget | null => {
+  for (const task of state.tasks.values())
+    for (const call of task.calls.values())
+      if (call.runtimeCallId === runtimeCallId)
+        return {
+          kind: "running",
+          task,
+          callId: call.id,
+          released: call.status === "dispatched",
+          toolIdentity: call.toolIdentity,
+        };
+  const unsettled = state.unsettledCalls.get(runtimeCallId);
+  return unsettled ? { kind: "unsettled", call: unsettled } : null;
+};
+
+/** The released call a result names: a running task's dispatched call, or an unsettled call of an ended task. */
+export const releasedCall = (
+  state: ConversationState,
+  runtimeCallId: string,
+): { toolIdentity: string } | null => {
+  const target = resultTarget(state, runtimeCallId);
+  if (target === null) return null;
+  if (target.kind === "unsettled") return target.call;
+  return target.released ? target : null;
+};
+
+/** The state with task `taskId` replaced by `update` of it; a task the state lacks is a bug, and throws. */
 export const withTask = (
   state: ConversationState,
   taskId: string,
   update: (task: TaskState) => TaskState,
 ): ConversationState => {
-  if (state.task?.id !== taskId) throw new Error(`task ${taskId} is not the conversation's task`);
-  return { ...state, task: update(state.task) };
+  const task = state.tasks.get(taskId);
+  if (!task) throw new Error(`task ${taskId} is not running`);
+  return { ...state, tasks: new Map(state.tasks).set(taskId, update(task)) };
 };
 
-/** The task with every revision replaced by `update` of it, keeping their order. */
-const mapCalls = (task: TaskState, update: (call: CallState) => CallState): TaskState => ({
-  ...task,
-  calls: new Map(
-    task.calls
-      .entries()
-      .map(([runtimeCallId, revisions]): [string, CallState[]] => [
-        runtimeCallId,
-        revisions.map(update),
-      ]),
-  ),
-});
-
-/** The task with the revision `callId` names changed by `fields`; a revision the task lacks is a bug, and throws. */
+/** The task with call `callId` changed by `fields`; a call the task lacks is a bug, and throws. */
 export const withCall = (
   task: TaskState,
   callId: string,
   fields: Partial<Pick<CallState, "status" | "approvalId">>,
 ): TaskState => {
-  if (!callById(task, callId)) throw new Error(`call ${callId} is not a call of task ${task.id}`);
-  return mapCalls(task, (call) => (call.id === callId ? { ...call, ...fields } : call));
-};
-
-/** The task with every revision given the status `statusOf` names for it, or keeping its own. */
-export const withCallStatuses = (
-  task: TaskState,
-  statusOf: ReadonlyMap<string, ToolCallStatus>,
-): TaskState =>
-  mapCalls(task, (call) => ({ ...call, status: statusOf.get(call.id) ?? call.status }));
-
-/** The task with `call` added as the latest revision under its runtime call id. */
-export const withRevision = (task: TaskState, call: CallState): TaskState => {
-  const calls = new Map(task.calls);
-  calls.set(call.runtimeCallId, [...(task.calls.get(call.runtimeCallId) ?? []), call]);
-  return { ...task, calls };
-};
-
-/** The task with approval `approvalId` pending on the call `callId` names, after every approval already pending. */
-export const withPending = (task: TaskState, approvalId: string, callId: string): TaskState => {
-  const pendingApprovals = new Map(task.pendingApprovals);
-  pendingApprovals.set(approvalId, callId);
-  return { ...task, pendingApprovals };
-};
-
-/** The task without approval `approvalId` among its pending ones. */
-export const withoutPending = (task: TaskState, approvalId: string): TaskState => {
-  const pendingApprovals = new Map(task.pendingApprovals);
-  pendingApprovals.delete(approvalId);
-  return { ...task, pendingApprovals };
+  const call = task.calls.get(callId);
+  if (!call) throw new Error(`call ${callId} is not a call of task ${task.id}`);
+  return { ...task, calls: new Map(task.calls).set(callId, { ...call, ...fields }) };
 };

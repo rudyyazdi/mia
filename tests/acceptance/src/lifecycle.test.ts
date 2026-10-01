@@ -4,19 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { startServer } from "@mia/server";
-import type { ApprovalStatus, TaskStatus } from "@mia/protocol";
+import type { TaskStatus } from "@mia/protocol";
 import { Catalog } from "@mia/records";
-import { ScriptedRuntime, type ScriptedTurn } from "./scripted-runtime.ts";
-import {
-  ackError,
-  ackResult,
-  FAKE_RUNTIME,
-  FAKE_RUNTIME_ENV,
-  must,
-  mustString,
-  startTestServer,
-  testProfile,
-} from "./harness.ts";
+import { ackError, ackResult, startTestServer, testProfile } from "./harness.ts";
+import { ScriptedSessions, type ScriptedSession } from "./scripted-session.ts";
 
 /** Listening TCP servers this process owns: a socket nobody closed is still counted here. */
 const listeningServers = (): number =>
@@ -37,19 +28,8 @@ const listenOnFreePort = async (): Promise<{ server: Server; port: number }> => 
 const closeServer = (server: Server): Promise<void> =>
   new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
 
-/** A turn wait that never aborts: the test itself decides when the turn ends. */
+/** A shutdown wait that never aborts: the test itself decides when the session ends. */
 const unbounded = (): AbortSignal => new AbortController().signal;
-
-/** Whether any process in the group led by `pid` is still alive (signal 0 only checks). */
-const processGroupExists = (pid: number): boolean => {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
-    throw error;
-  }
-};
 
 describe("server lifecycle", () => {
   it("releases the catalog and the approval bridge when the gateway cannot bind", async () => {
@@ -73,9 +53,11 @@ describe("server lifecycle", () => {
       await expect(
         startServer({
           profile,
-          adapter: new ScriptedRuntime(),
+          sessions: new ScriptedSessions(),
           log: () => undefined,
           evidenceReadDeadline: unbounded,
+          stopDeadline: unbounded,
+          attributionDeadline: unbounded,
           env: {},
         }),
       ).rejects.toThrow();
@@ -99,9 +81,11 @@ describe("server lifecycle", () => {
     try {
       const server = await startServer({
         profile: testProfile(dir),
-        adapter: new ScriptedRuntime(),
+        sessions: new ScriptedSessions(),
         log: () => undefined,
         evidenceReadDeadline: unbounded,
+        stopDeadline: unbounded,
+        attributionDeadline: unbounded,
         env: { MIA_MCP_HTTP_LOG: logFile },
       });
       try {
@@ -123,7 +107,7 @@ describe("server lifecycle", () => {
   });
 
   it("resolves close() on every call, not only the first", async () => {
-    const testServer = await startTestServer(new ScriptedRuntime());
+    const testServer = await startTestServer(new ScriptedSessions());
     try {
       await expect(testServer.server.close(unbounded())).resolves.toBeUndefined();
       await expect(testServer.server.close(unbounded())).resolves.toBeUndefined();
@@ -137,9 +121,11 @@ describe("server lifecycle", () => {
     try {
       const server = await startServer({
         profile: testProfile(dir),
-        adapter: new ScriptedRuntime(),
+        sessions: new ScriptedSessions(),
         log: () => undefined,
         evidenceReadDeadline: unbounded,
+        stopDeadline: unbounded,
+        attributionDeadline: unbounded,
         env: {},
       });
       const bridgeUrl = server.bridge.url;
@@ -169,81 +155,47 @@ describe("server lifecycle", () => {
   });
 });
 
-describe("shutdown mid-turn", () => {
-  it("refuses commands while it waits for the interrupted turn, and closes only once the turn has finished", async () => {
-    const runtime = new ScriptedRuntime();
-    const testServer = await startTestServer(runtime);
-    let turn: ScriptedTurn | null = null;
+describe("shutdown with work running", () => {
+  it("stops every task, refuses commands while the session dies, and closes only once its end is recorded", async () => {
+    const sessions = new ScriptedSessions();
+    const testServer = await startTestServer(sessions);
+    let session: ScriptedSession | null = null;
     try {
       const client = await testServer.connect("client-A");
       await client.startConversation();
-      const next = runtime.nextTurn();
-      const taskId = mustString(ackResult(await client.submitText("hello")).task_id, "task_id");
-      turn = await next;
-      turn.survivesInterrupt = true; // the turn ends only when the test ends it
+      ackResult(await client.submitText("hello"));
+      session = await sessions.session();
+      await session.beginTurn(0);
+      await session.delegate("a1");
+      session.exitsOnStop = false; // the session dies only when the test lets it
 
       let closed = false;
       const closing = testServer.server.close(unbounded()).then(() => {
         closed = true;
       });
       const requested = await client.waitFor("interruption_requested");
-      expect(requested.payload.task_id).toBe(taskId);
-      expect(turn.interrupted).toBe(true);
+      expect(session.stopped).toBe(true);
       expect(ackError(await client.submitText("another"))).toMatchObject({
         code: "invalid_state",
         message: "the server is shutting down",
       });
       expect(closed).toBe(false);
 
-      turn.end();
+      session.exitAfterStop();
       await closing;
       const catalog = testServer.catalog();
       try {
         expect(
-          catalog.get<{ status: TaskStatus }>("SELECT status FROM tasks WHERE id = ?", taskId),
+          catalog.get<{ status: TaskStatus }>(
+            "SELECT status FROM tasks WHERE id = ?",
+            requested.payload.task_id,
+          ),
         ).toEqual({ status: "interrupted" });
       } finally {
         catalog.close();
       }
     } finally {
-      turn?.end(); // a failed assertion must not leave the shutdown waiting on this turn forever
-      await testServer.close();
-    }
-  });
-
-  it("kills the runtime's process group and records the task interrupted before the catalog closes", async () => {
-    const testServer = await startTestServer(
-      undefined,
-      { executable: FAKE_RUNTIME },
-      { env: FAKE_RUNTIME_ENV },
-    );
-    try {
-      const client = await testServer.connect("client-A");
-      await client.startConversation();
-      const taskId = mustString(ackResult(await client.submitText("CHANGE")).task_id, "task_id");
-      // The runtime is now blocked on the approval bridge, mid-turn.
-      await client.waitFor("approval_requested");
-      const pid = must(testServer.server.engine.turn?.handle.pid, "runtime pid");
-      expect(processGroupExists(pid)).toBe(true);
-
-      await testServer.server.close(unbounded());
-
-      expect(processGroupExists(pid)).toBe(false);
-      // The gateway closed only after the turn finished, so the client already holds its outcome.
-      expect((await client.waitFor("task_finished")).payload.status).toBe("interrupted");
-      expect(process.getActiveResourcesInfo()).not.toContain("Timeout");
-      const catalog = testServer.catalog();
-      try {
-        expect(
-          catalog.get<{ status: TaskStatus }>("SELECT status FROM tasks WHERE id = ?", taskId),
-        ).toEqual({ status: "interrupted" });
-        expect(catalog.all<{ status: ApprovalStatus }>("SELECT status FROM approvals")).toEqual([
-          { status: "invalidated" },
-        ]);
-      } finally {
-        catalog.close();
-      }
-    } finally {
+      session?.exitAfterStop(); // a failed assertion must not leave the shutdown waiting forever
       await testServer.close();
     }
   });

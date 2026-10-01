@@ -2,22 +2,25 @@ import { match } from "ts-pattern";
 import { z } from "zod";
 import { redactValue } from "@mia/protocol";
 import { serverOf, type RuntimeConfig } from "./config.ts";
+import { MANAGER_TOOLS } from "./manager-tools.ts";
 
 /**
- * The tool contracts a conversation's provenance retains (role `tool_contracts`, version d1): its configured MCP
- * servers, redacted, its per-tool policy and its built-in tools. The tool lists the runtime reports are recorded per
+ * The tool contracts a conversation's provenance retains (role `tool_contracts`): its configured MCP
+ * servers, redacted, its per-tool policy, its exclusive tools and the manager agent's built-in tools. The tool lists the runtime reports are recorded per
  * execution. Retained as JSON, so its fields and their order are the persisted format.
  */
 export interface ToolContracts {
   mcpServers: unknown;
   toolPolicy: RuntimeConfig["toolPolicy"];
-  builtinTools: RuntimeConfig["builtinTools"];
+  exclusiveTools: RuntimeConfig["exclusiveTools"];
+  builtinTools: readonly string[];
 }
 
 export const toolContracts = (runtime: RuntimeConfig): ToolContracts => ({
   mcpServers: redactValue(runtime.mcpServers),
   toolPolicy: runtime.toolPolicy,
-  builtinTools: runtime.builtinTools,
+  exclusiveTools: runtime.exclusiveTools,
+  builtinTools: MANAGER_TOOLS,
 });
 
 const RetainedServers = z.object({ mcpServers: z.record(z.string(), z.unknown()) });

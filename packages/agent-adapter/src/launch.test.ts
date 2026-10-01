@@ -1,115 +1,166 @@
-import { existsSync, mkdtempDisposableSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempDisposableSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MCP_TOOL_TIMEOUT_MS, prepareLaunch } from "./launch.ts";
+import type { RuntimeConfig } from "./config.ts";
+import { MCP_TOOL_TIMEOUT_MS, prepareSession, shellQuoted } from "./launch.ts";
 
-/**
- * A launch plan for a minimal config in `dir`, inheriting `env`; `configEnv` is the profile's own, and
- * `agentPromptFile` replaces the prompt file written into `dir`.
- */
+/** A session plan for a minimal config working in `dir`, inheriting `env`, with `fields` replaced. */
 const planIn = (
   dir: string,
-  env: NodeJS.ProcessEnv,
-  overrides: { configEnv?: Record<string, string>; agentPromptFile?: string | null } = {},
-): ReturnType<typeof prepareLaunch> => {
-  const { configEnv = {} } = overrides;
-  const promptFile = join(dir, "agent.md");
-  writeFileSync(promptFile, "prompt\n");
-  return prepareLaunch({
+  env: NodeJS.ProcessEnv = {},
+  overrides: { fields?: Partial<RuntimeConfig>; managerPromptFile?: string | null } = {},
+) =>
+  prepareSession({
     config: {
       kind: "claude-code",
       executable: "claude",
       model: "m",
       effort: "medium",
       workingDirectory: join(dir, "work"),
-      builtinTools: [],
       mcpServers: {
-        d1: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: join(dir, "bodies.jsonl") },
+        fixture: {
+          type: "http",
+          url: "http://127.0.0.1:1/mcp",
+          bodyLog: join(dir, "bodies.jsonl"),
+        },
       },
-      toolPolicy: { mcp__d1__slow: "ask" },
-      agentPromptFile: promptFile,
+      toolPolicy: {
+        mcp__fixture__slow: "ask",
+        mcp__fixture__read: "allow",
+        mcp__fixture__forbidden: "deny",
+      },
+      agentPromptFile: join(dir, "manager.md"),
       outputDirectories: [],
-      env: configEnv,
+      env: {},
       extraSettings: {},
+      workerAgent: { description: "does tool work", promptFile: join(dir, "worker.md") },
+      exclusiveTools: [],
+      ...overrides.fields,
     },
     runtimeDir: join(dir, "runtime"),
     bridgeUrl: "http://127.0.0.1:2/mcp",
+    gateUrl: "http://127.0.0.1:3/gate/token",
     sessionId: "s",
     resume: false,
-    turnIndex: 1,
-    agentPromptFile:
-      overrides.agentPromptFile === undefined ? promptFile : overrides.agentPromptFile,
+    sessionIndex: 2,
+    managerPromptFile:
+      overrides.managerPromptFile === undefined
+        ? join(dir, "manager.md")
+        : overrides.managerPromptFile,
+    workerPrompt: "work carefully",
     env,
   });
+
+type Plan = ReturnType<typeof planIn>;
+
+const fileOf = (plan: Plan, suffix: string): unknown => {
+  const file = plan.setup.files.find((entry) => entry.path.endsWith(suffix));
+  if (!file) throw new Error(`no ${suffix} in the plan`);
+  return JSON.parse(file.content);
 };
 
-describe("launch plan", () => {
+const flag = (plan: Plan, name: string): string => plan.args[plan.args.indexOf(name) + 1] ?? "";
+
+describe("session plan", () => {
   it("inherits only the environment it is given, with the profile's env on top", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
     const plan = planIn(
       directory.path,
       { LANG: "C", SHARED: "inherited", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" },
-      { configEnv: { SHARED: "profile" } },
+      { fields: { env: { SHARED: "profile" } } },
     );
+    // A held approval gets 24h under both runtime timeouts (capability record F4).
     expect(plan.env).toEqual({
       LANG: "C",
       SHARED: "profile",
       MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS),
       CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS),
     });
-    // A held approval prompt gets the 24h budget under both runtime timeouts (capability record F4): 2.1.278
-    // aborts a call with no response or progress for 300s regardless of MCP_TOOL_TIMEOUT.
-    expect(MCP_TOOL_TIMEOUT_MS).toBe(24 * 60 * 60 * 1000);
   });
 
   it("writes nothing itself, and plans the directories and files its arguments refer to", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
-    const plan = planIn(directory.path, {});
-    const runtimeDir = join(directory.path, "runtime");
-    const workingDirectory = join(directory.path, "work");
-    expect(existsSync(runtimeDir)).toBe(false);
-    expect(existsSync(workingDirectory)).toBe(false);
-
-    expect(plan.cwd).toBe(workingDirectory);
-    expect(plan.setup.directories).toEqual([runtimeDir, workingDirectory]);
-    const argAfter = (flag: string): string => plan.args[plan.args.indexOf(flag) + 1] ?? "";
+    const plan = planIn(directory.path);
+    expect(existsSync(join(directory.path, "runtime"))).toBe(false);
+    expect(plan.setup.directories).toEqual([
+      join(directory.path, "runtime"),
+      join(directory.path, "work"),
+    ]);
     const planned = new Map(plan.setup.files.map((file) => [file.path, JSON.parse(file.content)]));
-    expect(planned.get(argAfter("--mcp-config"))).toEqual(plan.description.mcp_config);
-    expect(planned.get(argAfter("--settings"))).toEqual(plan.description.settings);
+    expect(planned.get(flag(plan, "--mcp-config"))).toEqual(plan.description.mcp_config);
+    expect(planned.get(flag(plan, "--settings"))).toEqual(plan.description.settings);
   });
 
   it("hands the runtime each MCP server without the body log only Mia reads", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
-    const plan = planIn(directory.path, {});
-    const [written] = plan.setup.files;
-    expect(JSON.parse(written?.content ?? "{}")).toMatchObject({
-      mcpServers: { d1: { type: "http", url: "http://127.0.0.1:1/mcp" } },
-    });
-    expect(written?.content).not.toContain("bodyLog");
+    const written = JSON.stringify(fileOf(planIn(directory.path), ".mcp.json"));
+    expect(written).toContain("http://127.0.0.1:1/mcp");
+    expect(written).not.toContain("bodyLog");
   });
 
-  it("appends the prompt file it is given, and no prompt when given none", () => {
+  it("reads messages as stream-json and replays each, loads no setting source, and asks only the bridge", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
-    const retained = join(directory.path, "objects", "digest");
-    const withPrompt = planIn(directory.path, {}, { agentPromptFile: retained });
-    const at = withPrompt.args.indexOf("--append-system-prompt-file");
-    expect(withPrompt.args.slice(at, at + 2)).toEqual(["--append-system-prompt-file", retained]);
-    const withoutPrompt = planIn(directory.path, {}, { agentPromptFile: null });
-    expect(withoutPrompt.args).not.toContain("--append-system-prompt-file");
-    expect(withoutPrompt.args).toContain("--session-id");
+    const plan = planIn(directory.path);
+    expect(flag(plan, "--input-format")).toBe("stream-json");
+    expect(plan.args).toContain("--replay-user-messages");
+    // No inherited rule can allow a call the hook failed to decide (see the capability record).
+    expect(flag(plan, "--setting-sources")).toBe("");
+    expect(flag(plan, "--permission-prompt-tool")).toBe("mcp__mia_approval__request");
+    expect(flag(plan, "--tools")).toBe("Task,TaskStop");
+  });
+
+  it("lets the worker agent use every listed tool and neither manager tool", () => {
+    using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
+    expect(fileOf(planIn(directory.path), ".agents.json")).toEqual({
+      "mia-worker": {
+        description: "does tool work",
+        prompt: "work carefully",
+        tools: ["mcp__fixture__slow", "mcp__fixture__read", "mcp__fixture__forbidden"],
+      },
+    });
+  });
+
+  it("leaves every call but a denied one to the gate hook, which may hold it as long as an approval", () => {
+    using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
+    const settings = fileOf(planIn(directory.path), ".settings.json");
+    expect(settings).toMatchObject({
+      permissions: { deny: ["mcp__fixture__forbidden"], ask: [], allow: [] },
+      hooks: { PreToolUse: [{ matcher: "", hooks: [{ type: "command", timeout: 86_400 }] }] },
+    });
+    expect(JSON.stringify(settings)).toContain("http://127.0.0.1:3/gate/token");
+  });
+
+  it("appends the manager prompt it is given, and none when given none", () => {
+    using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
+    expect(flag(planIn(directory.path), "--append-system-prompt-file")).toBe(
+      join(directory.path, "manager.md"),
+    );
+    const without = planIn(directory.path, {}, { managerPromptFile: null });
+    expect(without.args).not.toContain("--append-system-prompt-file");
   });
 
   it("turns on runtime debug logging only when the given environment sets MIA_RUNTIME_DEBUG", () => {
     using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
-    expect(planIn(directory.path, {}).args).not.toContain("--debug");
-    const plan = planIn(directory.path, { MIA_RUNTIME_DEBUG: "mcp" });
-    const at = plan.args.indexOf("--debug");
-    expect(plan.args.slice(at, at + 4)).toEqual([
-      "--debug",
-      "mcp",
-      "--debug-file",
-      join(directory.path, "runtime", "runtime-debug.log"),
-    ]);
+    expect(planIn(directory.path).args).not.toContain("--debug");
+    expect(flag(planIn(directory.path, { MIA_RUNTIME_DEBUG: "mcp" }), "--debug")).toBe("mcp");
+  });
+
+  it("keeps the worker prompt out of the retained description", () => {
+    using directory = mkdtempDisposableSync(join(tmpdir(), "mia-launch-"));
+    expect(JSON.stringify(planIn(directory.path).description)).not.toContain("work carefully");
+  });
+
+  it("quotes the hook's arguments so the shell expands nothing in a path", () => {
+    const parts = ["/state/$(touch pwned)/`id`", "it's", "a b", ""];
+    const printed = execFileSync(
+      "/bin/sh",
+      ["-c", `printf '%s\\n' ${parts.map(shellQuoted).join(" ")}`],
+      {
+        encoding: "utf8",
+      },
+    );
+    expect(printed).toBe(parts.map((part) => `${part}\n`).join(""));
   });
 });

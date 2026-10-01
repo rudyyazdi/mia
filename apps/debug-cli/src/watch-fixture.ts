@@ -29,6 +29,9 @@ export const taskRow = (fields: Partial<TaskRow> = {}): TaskRow => ({
   finished_at: null,
   text: "summarise my inbox",
   client_id: "client-A",
+  turn_id: null,
+  runtime_task_id: null,
+  delegation_call_id: null,
   ...fields,
 });
 
@@ -36,6 +39,7 @@ export const executionRow = (fields: Partial<ExecutionRow> = {}): ExecutionRow =
   id: "x1",
   task_id: "t1",
   conversation_id: "conv",
+  agent_role: "worker",
   runtime_identity: "scripted",
   runtime_conversation_id: "runtime-conv",
   requested_model: "model",
@@ -44,7 +48,6 @@ export const executionRow = (fields: Partial<ExecutionRow> = {}): ExecutionRow =
   reported_effort: null,
   effort_evidence: null,
   provenance_set_id: null,
-  execution_epoch: 1,
   status: "running",
   started_at: AT,
   ended_at: null,
@@ -59,7 +62,7 @@ export const toolCallRow = (fields: Partial<ToolCallRow> = {}): ToolCallRow => (
   execution_id: "x1",
   runtime_call_id: "toolu_1",
   binding_revision: 1,
-  tool_identity: "mcp__d1__change",
+  tool_identity: "mcp__fixture__change",
   argument_digest: "digest",
   redacted_arguments: JSON.stringify({ delta: 1 }),
   policy: "ask",
@@ -76,7 +79,6 @@ export const toolCallRow = (fields: Partial<ToolCallRow> = {}): ToolCallRow => (
 export const approvalRow = (fields: Partial<ApprovalRow> = {}): ApprovalRow => ({
   id: "a1",
   tool_call_id: "c1",
-  execution_epoch: 1,
   status: "pending",
   reason: null,
   requesting_event_id: null,
@@ -90,7 +92,7 @@ export const approvalRow = (fields: Partial<ApprovalRow> = {}): ApprovalRow => (
 export const eventRow = (fields: Partial<EventRow> & Pick<EventRow, "sequence">): EventRow => ({
   id: `e${fields.sequence}`,
   conversation_id: "conv",
-  type: "text_delta",
+  type: "reply_delta",
   payload_version: 1,
   payload: "{}",
   task_id: null,

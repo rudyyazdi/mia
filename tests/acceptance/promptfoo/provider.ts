@@ -9,7 +9,7 @@ import { errorMessage } from "@mia/protocol";
 import { MiaClient } from "@mia/text-client";
 import { readScenarioName, runScenario, scenarioFor, type ScenarioContext } from "./scenarios.ts";
 
-/** How long one scenario may run: its longest scenarios wait up to ten minutes for each of two tasks. */
+/** How long one scenario may run: its longest scenarios wait up to ten minutes for each of two messages. */
 const SCENARIO_TIMEOUT_MS = 20 * 60_000;
 /** How long connecting, or one setup command's acknowledgement, may take. */
 const SETUP_STEP_TIMEOUT_MS = 30_000;
@@ -26,7 +26,7 @@ export default class MiaScenarioProvider {
   constructor(options: ProviderOptions = {}) {
     this.providerId = options.id ?? "mia-live";
     this.promptVersion =
-      options.config?.promptVersion ?? process.env.MIA_AGENT_PROMPT_VERSION ?? "agent-v1";
+      options.config?.promptVersion ?? process.env.MIA_MANAGER_PROMPT_VERSION ?? "manager-v1";
   }
 
   id(): string {
@@ -71,7 +71,6 @@ export default class MiaScenarioProvider {
       return connected;
     };
     const client = await connect();
-    const extra: MiaClient[] = [];
     try {
       await client.sendDiagnostics(setupStep());
       await client.startConversation(setupStep());
@@ -79,11 +78,6 @@ export default class MiaScenarioProvider {
         client,
         within,
         harness: new FixtureHarness(harnessUrl),
-        reconnect: async () => {
-          const reconnected = await connect();
-          extra.push(reconnected);
-          return reconnected;
-        },
         budget: (label) => budget.takeSync(`live:${scenarioName}:${label}`, scenario.profile),
       };
       const evidence = await runScenario(scenario, ctx);
@@ -103,7 +97,6 @@ export default class MiaScenarioProvider {
       };
     } finally {
       client.close();
-      for (const extraClient of extra) extraClient.close();
     }
   }
 }

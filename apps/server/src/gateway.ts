@@ -17,13 +17,14 @@ import {
 } from "@mia/protocol";
 import { type CommandReply, type RecordedCommand, type RecordWriter } from "@mia/records";
 import { decodeEnvelope } from "./decode.ts";
-import type { CommandResult, Delivery, Engine } from "./engine.ts";
+import type { Delivery } from "./client-ownership.ts";
+import type { CommandEngine, CommandResult } from "./engine.ts";
 
 export interface GatewayOptions {
   host: "127.0.0.1";
   port: number;
   secretFile: string;
-  engine: Engine;
+  engine: CommandEngine;
   writer: RecordWriter;
   /** The clock an ack's `server_time` reads: the engine's, so acks and events agree. */
   now: () => Date;

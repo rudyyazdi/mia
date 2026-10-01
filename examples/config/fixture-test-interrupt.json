@@ -12,28 +12,32 @@
     "model": "claude-sonnet-5",
     "effort": "medium",
     "workingDirectory": "../../.mia-work/fixture-test-interrupt",
-    "builtinTools": [],
     "mcpServers": {
-      "d1": {
+      "fixture": {
         "type": "http",
         "url": "${MIA_FIXTURE_MCP_URL}",
         "bodyLog": "${MIA_FIXTURE_DIR}/mcp-bodies.jsonl"
       }
     },
     "toolPolicy": {
-      "mcp__d1__read": "allow",
-      "mcp__d1__change": "allow",
-      "mcp__d1__slow": "ask",
-      "mcp__d1__artifact": "ask",
-      "mcp__d1__forbidden": "deny"
+      "mcp__fixture__read": "allow",
+      "mcp__fixture__change": "allow",
+      "mcp__fixture__slow": "ask",
+      "mcp__fixture__artifact": "ask",
+      "mcp__fixture__forbidden": "deny"
     },
-    "agentPromptFile": "../../prompts/agent-v1.md",
+    "agentPromptFile": "../../prompts/manager-v1.md",
+    "workerAgent": {
+      "description": "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
+      "promptFile": "../../prompts/worker-v1.md"
+    },
+    "exclusiveTools": ["mcp__fixture__slow"],
     "outputDirectories": ["${MIA_FIXTURE_DIR}/artifacts"],
     "env": {},
     "extraSettings": {}
   },
-  "architectureDocument": "../../docs/D1/PLAN.md",
+  "architectureDocument": "../../docs/PLAN.md",
   "notes": [
-    "Second test profile from docs/D1/TEST-PLAN.md: change is policy-allow so gating is proven independently of approval prompts."
+    "Second test profile: change is policy-allow so gating is proven independently of approval prompts."
   ]
 }

@@ -89,6 +89,11 @@ class Terminal {
     this.#rl?.prompt(true);
   }
 
+  /** End a streamed reply, so the next line starts on a line of its own. */
+  finishStream(): void {
+    this.#endStream();
+  }
+
   #endStream(): void {
     if (!this.#streaming) return;
     this.#output.write("\n");
@@ -101,29 +106,36 @@ interface Session {
   client: MiaClient;
   deadlines: TextClientDeadlines;
   terminal: Terminal;
-  currentTask: string | null;
+  /** Every running task by id, with what it is doing. */
+  tasks: Map<string, string>;
   pendingApprovals: Map<string, EventPayload<"approval_requested">>;
 }
 
 const renderEvents = (session: Session): void => {
   const { client, terminal } = session;
   const out = (line: string) => terminal.out(line);
-  client.on("text_delta", (event: ServerEventOf<"text_delta">) =>
+  // The manager agent's reply streams under its turn, which may report a task's end.
+  client.on("reply_delta", (event: ServerEventOf<"reply_delta">) =>
     terminal.stream(event.payload.text),
   );
+  client.on("turn_finished", (event: ServerEventOf<"turn_finished">) => {
+    terminal.finishStream();
+    if (event.payload.status !== "completed")
+      out(`◆ turn ${event.payload.status}${event.payload.error ? `: ${event.payload.error}` : ""}`);
+  });
   client.on("task_started", (event: ServerEventOf<"task_started">) => {
-    session.currentTask = event.payload.task_id;
-    out(`▶ task ${event.payload.task_id} started (epoch ${event.payload.execution_epoch})`);
+    session.tasks.set(event.payload.task_id, event.payload.text);
+    out(`▶ task ${event.payload.task_id} started: ${event.payload.text}`);
   });
   client.on("approval_requested", (event: ServerEventOf<"approval_requested">) => {
     session.pendingApprovals.set(event.payload.approval_id, event.payload);
     out(
       [
-        `┌─ APPROVAL REQUIRED  ${event.payload.approval_id}`,
+        `┌─ APPROVAL REQUIRED  ${event.payload.approval_id}  (task ${event.payload.task_id})`,
         `│ tool:      ${event.payload.tool_identity}`,
         `│ action:    ${event.payload.intended_action}`,
         `│ arguments: ${JSON.stringify(event.payload.redacted_arguments)}`,
-        `│ binding:   call ${event.payload.runtime_call_id} rev ${event.payload.binding_revision} epoch ${event.payload.execution_epoch} digest ${event.payload.argument_digest.slice(0, 12)}…`,
+        `│ binding:   call ${event.payload.runtime_call_id} rev ${event.payload.binding_revision} digest ${event.payload.argument_digest.slice(0, 12)}…`,
         `└─ type  /approve ${event.payload.approval_id}   or   /reject ${event.payload.approval_id}`,
       ].join("\n"),
     );
@@ -144,10 +156,13 @@ const renderEvents = (session: Session): void => {
       `  · ${event.payload.tool_identity} → ${event.payload.status}${args}${event.payload.detail ? ` (${event.payload.detail})` : ""}`,
     );
   });
-  client.on("interruption_requested", () => out("⏹ interruption requested; action gate closed"));
+  client.on("interruption_requested", (event: ServerEventOf<"interruption_requested">) =>
+    out(`⏹ interruption of task ${event.payload.task_id} requested; its calls are refused`),
+  );
   client.on("interruption_outcome", (event: ServerEventOf<"interruption_outcome">) => {
+    session.tasks.delete(event.payload.task_id);
     const lines = [
-      `⏹ interruption outcome: task ${event.payload.task_status}; runtime ${event.payload.runtime_cancellation}`,
+      `⏹ interruption outcome: task ${event.payload.task_id} ${event.payload.task_status}; runtime ${event.payload.runtime_cancellation}`,
     ];
     for (const action of event.payload.actions)
       lines.push(
@@ -156,7 +171,7 @@ const renderEvents = (session: Session): void => {
     out(lines.join("\n"));
   });
   client.on("task_finished", (event: ServerEventOf<"task_finished">) => {
-    session.currentTask = null;
+    session.tasks.delete(event.payload.task_id);
     out(
       `■ task ${event.payload.task_id} ${event.payload.status}${event.payload.error ? `: ${event.payload.error}` : ""}`,
     );
@@ -167,7 +182,9 @@ const renderEvents = (session: Session): void => {
   client.on("client_error", (message: string) => out(`✗ client: ${message}`));
 };
 
-/** Runs one typed line: plain text becomes a task, a slash command acts on the session. */
+const COMMANDS = "/approve <id>, /reject <id>, /interrupt [task id], /tasks, /diag, /quit";
+
+/** Runs one typed line: plain text is sent to the agent, a slash command acts on the session. */
 const handleLine = async (session: Session, text: string, quit: () => void): Promise<void> => {
   const { client } = session;
   const out = (line: string) => session.terminal.out(line);
@@ -197,13 +214,30 @@ const handleLine = async (session: Session, text: string, quit: () => void): Pro
     })
     .with("/quit", () => quit())
     .with("/interrupt", async () => {
-      if (rest.length > 0) out(`/interrupt takes no argument (ignored: ${rest.join(" ")})`);
-      if (!session.currentTask) {
+      // With a task id, that task alone; without, the interrupt control, which stops every task.
+      const [taskId, ...extra] = rest;
+      if (extra.length > 0)
+        out(`/interrupt takes one task id at most (ignored: ${extra.join(" ")})`);
+      if (taskId !== undefined && !session.tasks.has(taskId)) {
+        out(`unknown task id; running: ${[...session.tasks.keys()].join(", ") || "none"}`);
+        return;
+      }
+      if (taskId === undefined && session.tasks.size === 0) {
         out("no running task");
         return;
       }
-      const ack = await client.interrupt(session.currentTask, acknowledged());
+      const ack =
+        taskId === undefined
+          ? await client.interruptAll(acknowledged())
+          : await client.interrupt(taskId, acknowledged());
       out(`interrupt ${describeAck(ack)}`);
+    })
+    .with("/tasks", () => {
+      out(
+        session.tasks.size === 0
+          ? "no running task"
+          : [...session.tasks].map(([id, text]) => `  ${id}: ${text}`).join("\n"),
+      );
     })
     .with("/approve", () => decideApproval("approve"))
     .with("/reject", () => decideApproval("reject"))
@@ -213,9 +247,7 @@ const handleLine = async (session: Session, text: string, quit: () => void): Pro
     })
     .with(P.string, () => {
       // A mistyped command must not become a task for the agent.
-      out(
-        `unknown command ${cmd}; commands: /approve <id>, /reject <id>, /interrupt, /diag, /quit`,
-      );
+      out(`unknown command ${cmd}; commands: ${COMMANDS}`);
     })
     .exhaustive();
 };
@@ -262,7 +294,7 @@ export const runTextClient = async (
     client,
     deadlines,
     terminal: new Terminal(io.output),
-    currentTask: null,
+    tasks: new Map(),
     pendingApprovals: new Map(),
   };
   const out = (line: string) => session.terminal.out(line);
@@ -273,7 +305,7 @@ export const runTextClient = async (
 
   const conversationId = await startSession(session);
   out(`connected to ${url}; conversation ${conversationId}`);
-  out("type text to submit a task; /approve <id>, /reject <id>, /interrupt, /diag, /quit");
+  out(`type text to send it; ${COMMANDS}`);
   const rl = createInterface({ input: io.input, output: io.output, prompt: "mia> " });
   session.terminal.attach(rl);
   const heartbeat = setInterval(

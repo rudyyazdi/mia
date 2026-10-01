@@ -17,13 +17,14 @@ const profileInput = (): Profile => ({
     model: "${MODEL}",
     effort: "low",
     workingDirectory: "work",
-    builtinTools: [],
     mcpServers: {},
     toolPolicy: {},
     agentPromptFile: "prompt.md",
     outputDirectories: ["out", "/absolute/output"],
     env: {},
     extraSettings: {},
+    workerAgent: { description: "does tool work", promptFile: "/worker.md" },
+    exclusiveTools: [],
   },
 });
 

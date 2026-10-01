@@ -8,13 +8,14 @@ const runtime = (mcpServers: RuntimeConfig["mcpServers"]): RuntimeConfig => ({
   model: "m",
   effort: "low",
   workingDirectory: "/work",
-  builtinTools: [],
   mcpServers,
-  toolPolicy: { mcp__fixture__read: "allow" },
+  toolPolicy: { mcp__fixture__change: "ask" },
   agentPromptFile: "/prompt.md",
   outputDirectories: [],
   env: {},
   extraSettings: {},
+  workerAgent: { description: "does tool work", promptFile: "/worker.md" },
+  exclusiveTools: [],
 });
 
 type McpServer = RuntimeConfig["mcpServers"][string];
@@ -40,7 +41,7 @@ const retained = (config: RuntimeConfig): unknown =>
   JSON.parse(JSON.stringify(toolContracts(config)));
 
 describe("toolContracts", () => {
-  it("keeps the retained d1 format: its fields in order, the servers redacted", () => {
+  it("keeps the retained format: its fields in order, the servers redacted", () => {
     // Pinned: provenance retains these bytes (`JSON.stringify(…, null, 2)`), so a change here changes the records.
     expect(JSON.stringify(toolContracts(runtime({ fixture: FIXTURE, real: REAL })), null, 2))
       .toBe(`{
@@ -59,9 +60,13 @@ describe("toolContracts", () => {
     }
   },
   "toolPolicy": {
-    "mcp__fixture__read": "allow"
+    "mcp__fixture__change": "ask"
   },
-  "builtinTools": []
+  "exclusiveTools": [],
+  "builtinTools": [
+    "Task",
+    "TaskStop"
+  ]
 }`);
   });
 });

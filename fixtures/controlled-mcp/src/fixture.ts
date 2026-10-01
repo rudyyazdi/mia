@@ -53,8 +53,7 @@ export interface FixtureOptions {
  * The fixture's body log, in its directory: each `tools/call` request and response body, keyed by the runtime's
  * tool-use id. A profile names it as the fixture server's `bodyLog`, and a server in debug mode records the lines of
  * each call from it (issue #6). It is append-only, like the ledger, and a harness reset leaves it: lines are matched by
- * tool-use id, which the real runtime never reuses. fake-claude's ids are fixed, so a test that runs it twice against
- * one fixture in debug mode would see the first call's lines again; each such test gets a fixture of its own.
+ * tool-use id, which the real runtime never reuses.
  */
 export const BODY_LOG_FILE = "mcp-bodies.jsonl";
 
@@ -76,7 +75,12 @@ const WAIT_ENTERED_POLL_MS = 60_000;
 const NOTHING_ENTERED = "no slow call entered before timeout";
 const NothingEnteredSchema = z.object({ error: z.literal(NOTHING_ENTERED) });
 
-type ControlledSlowCall = PendingSlowCall & { release: () => void; cancel: () => void };
+type ControlledSlowCall = PendingSlowCall & {
+  release: () => void;
+  cancel: () => void;
+  /** Settles once the call has written its outcome to the ledger. */
+  settled: Promise<void>;
+};
 
 /**
  * Controlled MCP fixture: tools read / change / slow / artifact / forbidden.
@@ -98,7 +102,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
   };
 
   const createServerForRequest = (ctx: McpRequestContext): McpServer => {
-    const server = new McpServer({ name: "d1-controlled-fixture", version: "0.1.0" });
+    const server = new McpServer({ name: "controlled-fixture", version: "0.1.0" });
     const callId = () => `fx-${ctx.requestId}-${randomUUID().slice(0, 8)}`;
 
     server.registerTool(
@@ -153,7 +157,9 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         const { promise: outcomePromise, resolve: resolveOutcome } = Promise.withResolvers<
           "released" | "cancelled"
         >();
+        const written = Promise.withResolvers<undefined>();
         const call: ControlledSlowCall = {
+          settled: written.promise,
           call_id: id,
           mode,
           entered_at: new Date().toISOString(),
@@ -180,6 +186,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         if (outcome === "cancelled") {
           ledger.append({ kind: "cancelled", tool: "slow", callId: id, args: { mode } });
           pending.delete(id);
+          written.resolve(undefined);
           return { isError: true, content: [{ type: "text", text: "cancelled before commit" }] };
         }
         const value = ledger.increment(1);
@@ -192,6 +199,7 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
         });
         pending.delete(id);
         ledger.append({ kind: "returned", tool: "slow", callId: id, args: { mode } });
+        written.resolve(undefined);
         return { content: [{ type: "text", text: JSON.stringify({ counter: value }) }] };
       },
     );
@@ -283,7 +291,11 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
     const url = new URL(req.url ?? "/", `http://${host}`);
     if (req.method === "GET" && url.pathname === "/state") return sendJson(res, 200, snapshot());
     if (req.method === "POST" && url.pathname === "/reset") {
-      for (const call of pending.values()) call.release();
+      // A call left at its barrier by an earlier run is released and allowed to write its outcome first, so nothing
+      // it writes lands in the ledger the reset starts.
+      const left = [...pending.values()];
+      for (const call of left) call.release();
+      await Promise.all(left.map((call) => call.settled));
       pending.clear();
       ledger.reset();
       return sendJson(res, 200, { ok: true });

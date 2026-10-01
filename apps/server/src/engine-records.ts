@@ -52,7 +52,15 @@ export type EngineRecord =
   | { kind: "update_tool_call"; id: IdOf<"updateToolCall">; fields: FieldsOf<"updateToolCall"> }
   | { kind: "create_approval"; input: InputOf<"createApproval"> }
   | { kind: "update_approval"; id: IdOf<"updateApproval">; fields: FieldsOf<"updateApproval"> }
-  | { kind: "record_diagnostics"; input: InputOf<"recordDiagnostics"> };
+  | { kind: "record_diagnostics"; input: InputOf<"recordDiagnostics"> }
+  | { kind: "create_turn"; input: InputOf<"createTurn"> }
+  | { kind: "update_turn"; id: IdOf<"updateTurn">; fields: FieldsOf<"updateTurn"> }
+  | { kind: "acquire_lease"; input: InputOf<"acquireLease"> }
+  | { kind: "release_lease"; id: IdOf<"releaseLease">; releasedAt: ArgumentsOf<"releaseLease">[1] };
+
+/** Each record as its event type, or its writer operation: how tests and logs name what a transition records. */
+export const recordLabels = (records: readonly EngineRecord[]): string[] =>
+  records.map((record) => (record.kind === "append_event" ? record.input.type : record.kind));
 
 /** What committing one record changed: an event, with the sequence the catalog gave it, or some other row. */
 export type CommittedChange = { kind: "event"; id: string; sequence: number } | { kind: "row" };
@@ -134,6 +142,22 @@ const writeRecord = (writer: RecordWriter, record: EngineRecord): CommittedChang
     })
     .with({ kind: "record_diagnostics" }, ({ input }) => {
       writer.recordDiagnostics(input);
+      return ROW;
+    })
+    .with({ kind: "create_turn" }, ({ input }) => {
+      writer.createTurn(input);
+      return ROW;
+    })
+    .with({ kind: "update_turn" }, ({ id, fields }) => {
+      writer.updateTurn(id, fields);
+      return ROW;
+    })
+    .with({ kind: "acquire_lease" }, ({ input }) => {
+      writer.acquireLease(input);
+      return ROW;
+    })
+    .with({ kind: "release_lease" }, ({ id, releasedAt }) => {
+      writer.releaseLease(id, releasedAt);
       return ROW;
     })
     .exhaustive();

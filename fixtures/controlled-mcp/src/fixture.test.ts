@@ -175,12 +175,24 @@ describe("controlled fixture", () => {
     await expect(harness.state()).resolves.toHaveProperty("counter");
   });
 
-  it("slow uncancellable survives disconnection and commits on release", async () => {
+  /** A fresh ledger with one uncancellable slow call entered and waiting at its barrier. */
+  const enteredUncancellable = async () => {
     await harness.reset();
     const mcpClient = await client();
     const call = mcpClient.callTool({ name: "slow", arguments: { mode: "uncancellable" } });
     call.catch(() => undefined);
-    const entered = await harness.waitEntered();
+    return { mcpClient, entered: await harness.waitEntered() };
+  };
+
+  it("starts a reset's ledger empty even when it releases a slow call left at its barrier", async () => {
+    const { mcpClient } = await enteredUncancellable();
+    await harness.reset();
+    expect(await harness.state()).toMatchObject({ counter: 0, ledger: [], pending: [] });
+    await mcpClient.close();
+  });
+
+  it("slow uncancellable survives disconnection and commits on release", async () => {
+    const { mcpClient, entered } = await enteredUncancellable();
     await mcpClient.close();
     const before = await harness.state();
     expect(before.counter).toBe(0);
@@ -205,7 +217,7 @@ describe("controlled fixture", () => {
     expect(bad.isError).toBe(true);
     const good = await mcpClient.callTool({
       name: "artifact",
-      arguments: { name: "result.txt", text: "D1" },
+      arguments: { name: "result.txt", text: "OK" },
     });
     const parsed = ArtifactResult.parse(JSON.parse(firstText(good)));
     expect(parsed.artifact.path.startsWith(join(dir, "artifacts"))).toBe(true);

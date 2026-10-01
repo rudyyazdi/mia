@@ -1,37 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { diagnosticsViews, taskViews } from "./queries.ts";
+import { diagnosticsViews, turnViews } from "./queries.ts";
 import { fixtureEvent, snapshotFixture } from "./snapshot-fixture.ts";
 
-describe("taskViews", () => {
-  it("assembles only each task's text deltas in journal order", () => {
+describe("turnViews", () => {
+  it("assembles each turn's reply and the messages it took, in journal order", () => {
     const snapshot = snapshotFixture();
-    const task = snapshot.tables.tasks[0];
-    if (!task) throw new Error("fixture task missing");
-    snapshot.tables.tasks.push({ ...task, id: "other-task" }, { ...task, id: "silent-task" });
-    snapshot.tables.events = [
-      fixtureEvent({ payload: '{"text":"Hello "}' }),
-      fixtureEvent({
-        id: "unrelated",
-        sequence: 2,
-        task_id: "other-task",
-        payload: '{"text":"Other"}',
-      }),
-      fixtureEvent({
-        id: "non-text",
-        sequence: 3,
-        type: "tool_dispatched",
-        payload: '{"text":"ignored"}',
-      }),
-      fixtureEvent({ id: "last", sequence: 4, payload: '{"text":"world"}' }),
-      fixtureEvent({ id: "global", sequence: 5, task_id: null, payload: '{"text":"global"}' }),
+    const turn = {
+      conversation_id: "conversation",
+      execution_id: "exec",
+      caused_by_task_id: null,
+      status: "completed" as const,
+      started_at: "2026-01-01T00:00:00.000Z",
+      finished_at: null,
+      usage: null,
+    };
+    snapshot.tables.turns = [
+      { ...turn, id: "turn", cause: "user_input" },
+      { ...turn, id: "other", cause: "user_input" },
     ];
-    expect(taskViews(snapshot).map((view) => ({ id: view.id, text: view.assistant_text }))).toEqual(
-      [
-        { id: "task", text: "Hello world" },
-        { id: "other-task", text: "Other" },
-        { id: "silent-task", text: "" },
-      ],
-    );
+    snapshot.tables.events = [
+      fixtureEvent({ id: "m1", type: "message_received", payload: '{"text":"hi"}' }),
+      fixtureEvent({
+        id: "t1",
+        sequence: 2,
+        type: "message_taken",
+        payload: '{"message_event_id":"m1","turn_id":"turn"}',
+      }),
+      fixtureEvent({ id: "r1", sequence: 3, payload: '{"turn_id":"turn","text":"Hello "}' }),
+      fixtureEvent({ id: "r2", sequence: 4, payload: '{"turn_id":"other","text":"Other"}' }),
+      fixtureEvent({ id: "r3", sequence: 5, payload: '{"turn_id":"turn","text":"world"}' }),
+    ];
+    expect(
+      turnViews(snapshot).map((view) => ({
+        id: view.id,
+        messages: view.messages,
+        reply: view.reply,
+      })),
+    ).toEqual([
+      { id: "turn", messages: ["hi"], reply: "Hello world" },
+      { id: "other", messages: [], reply: "Other" },
+    ]);
   });
 });
 

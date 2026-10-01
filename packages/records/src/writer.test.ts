@@ -60,13 +60,13 @@ const seedToolCall = (): void => {
     id: "exec-1",
     startedAt: AT,
     taskId: "task-1",
+    agentRole: "worker",
     conversationId: "conv-1",
     runtimeIdentity: "claude-code",
     runtimeConversationId: "rt-1",
     requestedModel: "m",
     requestedEffort: "medium",
     provenanceSetId: prov,
-    executionEpoch: 1,
   });
   writer.createToolCall({
     id: "call-1",
@@ -76,7 +76,7 @@ const seedToolCall = (): void => {
     executionId: "exec-1",
     runtimeCallId: "toolu_1",
     bindingRevision: 1,
-    toolIdentity: "mcp__d1__change",
+    toolIdentity: "mcp__fixture__change",
     argumentDigest: "d",
     redactedArguments: { delta: 1 },
     policy: "ask",
@@ -100,7 +100,7 @@ describe("record writer", () => {
           id: "evt-1",
           receivedAt: AT,
           conversationId: "conv-1",
-          type: "task_submitted",
+          type: "message_received",
           payload: { ok: true },
         });
         writer.createTask({
@@ -143,7 +143,7 @@ describe("record writer", () => {
       id: "evt-1",
       receivedAt: AT,
       conversationId: "conv-1",
-      type: "task_submitted",
+      type: "message_received",
       payload: { api_key: "sk-ant-abcdefghijklmnop", text: "Bearer abcdefghijklmnopqrstuvwxyz" },
     });
     const second = writer.appendEvent({
@@ -187,7 +187,7 @@ describe("record writer", () => {
         id: "evt-1",
         receivedAt: AT,
         conversationId: "conv-1",
-        type: "task_submitted",
+        type: "message_received",
         payload: {},
         taskId,
       });
@@ -234,12 +234,11 @@ describe("record writer", () => {
     expect(writer.objects.verifySync(one.digest)).toBe("verified");
   });
 
-  it("rejects duplicate approvals for the same binding and epoch", () => {
+  it("rejects a second approval for the same call", () => {
     seedToolCall();
     const approval = {
       requestedAt: AT,
       toolCallId: "call-1",
-      executionEpoch: 1,
       requestingEventId: null,
     };
     writer.createApproval({ id: "appr-1", ...approval });
@@ -363,5 +362,67 @@ describe("record writer", () => {
         writer.recordCommand({ ...command("cmd-1", "conn-3"), clientId: "client-2" }).kind,
       ).toBe("new");
     });
+  });
+});
+
+describe("exclusive-tool leases", () => {
+  const lease = (id: string) => ({
+    id,
+    conversationId: "conv-1",
+    toolIdentity: "mcp__fixture__change",
+    taskId: "task-1",
+    toolCallId: "call-1",
+    acquiredAt: AT,
+  });
+
+  it("refuses a second unreleased lease of a tool and fences each new lease after a release", () => {
+    seedToolCall();
+    expect(writer.acquireLease(lease("lease-1"))).toEqual({ fence: 1 });
+    expect(() => writer.acquireLease(lease("lease-2"))).toThrow();
+    writer.releaseLease("lease-1", AT);
+    expect(writer.acquireLease(lease("lease-3"))).toEqual({ fence: 2 });
+  });
+});
+
+describe("executions and turns", () => {
+  it("runs a manager agent's execution without a task and every other role with one", () => {
+    seedToolCall();
+    const execution = (id: string, agentRole: "manager" | "worker", taskId: string | null) => ({
+      id,
+      startedAt: AT,
+      taskId,
+      agentRole,
+      conversationId: "conv-1",
+      runtimeIdentity: "claude-code",
+      runtimeConversationId: "rt-1",
+      requestedModel: "m",
+      requestedEffort: "medium" as const,
+      provenanceSetId: null,
+    });
+    writer.createExecution(execution("exec-manager", "manager", null));
+    expect(() => writer.createExecution(execution("exec-bad", "manager", "task-1"))).toThrow();
+    expect(() => writer.createExecution(execution("exec-orphan", "worker", null))).toThrow();
+  });
+
+  it("names the task a task-end turn reports, and none for a turn the user started", () => {
+    seedToolCall();
+    const turn = (id: string, cause: Parameters<RecordWriter["createTurn"]>[0]["cause"]) =>
+      writer.createTurn({
+        id,
+        conversationId: "conv-1",
+        executionId: "exec-1",
+        startedAt: AT,
+        cause,
+      });
+    turn("turn-1", { kind: "user_input" });
+    turn("turn-2", { kind: "task_end", taskId: "task-1" });
+    expect(
+      catalog.all<{ id: string; caused_by_task_id: string | null }>(
+        "SELECT id, caused_by_task_id FROM turns ORDER BY id",
+      ),
+    ).toEqual([
+      { id: "turn-1", caused_by_task_id: null },
+      { id: "turn-2", caused_by_task_id: "task-1" },
+    ]);
   });
 });

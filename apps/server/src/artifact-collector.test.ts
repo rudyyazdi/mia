@@ -50,12 +50,12 @@ const workspace = (): { root: string; out: string; [Symbol.dispose]: () => void 
 describe("collectArtifact", () => {
   it("retains a file reached through a symlink that resolves inside the output directory", async () => {
     using dirs = workspace();
-    writeFileSync(join(dirs.out, "real.txt"), "D1");
+    writeFileSync(join(dirs.out, "real.txt"), "OK");
     symlinkSync(join(dirs.out, "real.txt"), join(dirs.out, "link.txt"));
     const { collect, opened } = recordingCollector();
     expect(await collect({ path: join(dirs.out, "link.txt") }, [dirs.out])).toEqual({
       status: "retained",
-      bytes: Buffer.from("D1"),
+      bytes: Buffer.from("OK"),
     });
     // Only the resolved target is opened, never the symlink itself.
     expect(opened).toEqual([await realpath(join(dirs.out, "real.txt"))]);
@@ -63,7 +63,7 @@ describe("collectArtifact", () => {
 
   it("resolves a symlinked output directory before checking containment", async () => {
     using dirs = workspace();
-    writeFileSync(join(dirs.out, "a.txt"), "D1");
+    writeFileSync(join(dirs.out, "a.txt"), "OK");
     const alias = join(dirs.root, "alias");
     symlinkSync(dirs.out, alias);
     expect((await collectArtifact({ path: join(dirs.out, "a.txt") }, [alias])).status).toBe(
@@ -102,7 +102,7 @@ describe("collectArtifact", () => {
 
   it("treats an output directory that does not exist as containing nothing", async () => {
     using dirs = workspace();
-    writeFileSync(join(dirs.out, "a.txt"), "D1");
+    writeFileSync(join(dirs.out, "a.txt"), "OK");
     const capture = await collectArtifact({ path: join(dirs.out, "a.txt") }, [
       join(dirs.root, "none"),
     ]);
@@ -164,7 +164,7 @@ describe("collectArtifact", () => {
 
   it("does not follow a symlink swapped in after the path was resolved", async () => {
     using dirs = workspace();
-    writeFileSync(join(dirs.out, "real.txt"), "D1");
+    writeFileSync(join(dirs.out, "real.txt"), "OK");
     const link = join(dirs.out, "link.txt");
     symlinkSync(join(dirs.out, "real.txt"), link);
     const collect = createArtifactCollector({

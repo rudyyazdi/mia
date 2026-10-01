@@ -1,4 +1,4 @@
-import type { LaunchPlan } from "./launch.ts";
+import type { SessionPlan } from "./launch.ts";
 
 /**
  * The runtime-independent contract between an agent runtime and the engine. A runtime's own message
@@ -32,12 +32,19 @@ export interface TurnSummary {
 }
 
 export type RuntimeEvent =
-  | { type: "runtime_started"; pid: number; launch: LaunchPlan["description"]; at: string }
+  | { type: "runtime_started"; pid: number; launch: SessionPlan["description"]; at: string }
+  /** The runtime replayed a user message as a turn took it: the UUID Mia sent the message under. */
+  | { type: "input_taken"; runtimeMessageId: string; at: string }
   | { type: "runtime_init"; init: RuntimeInit; at: string }
-  | { type: "text_delta"; text: string; at: string }
+  | { type: "text_delta"; text: string; parentCallId: string | null; at: string }
   | {
       type: "tool_proposed";
       runtimeCallId: string;
+      /**
+       * The delegation call whose worker agent proposed this call, or null for the manager agent's own call. Claude
+       * Code reports it as `parent_tool_use_id` on the message that carries the call.
+       */
+      parentCallId: string | null;
       toolIdentity: string;
       arguments: unknown;
       complete: boolean;
@@ -47,6 +54,8 @@ export type RuntimeEvent =
   | {
       type: "tool_result";
       runtimeCallId: string;
+      /** As on `tool_proposed`: the delegation call whose worker agent received this result, or null. */
+      parentCallId: string | null;
       isError: boolean;
       content: unknown;
       raw: unknown;
@@ -56,3 +65,32 @@ export type RuntimeEvent =
   | { type: "runtime_stderr"; text: string; at: string }
   | { type: "malformed_event"; raw: string; error: string; at: string }
   | { type: "runtime_exit"; code: number | null; signal: NodeJS.Signals | null; at: string };
+
+/**
+ * What a manager agent's session reports besides a turn's events: the runtime's own record of each worker agent
+ * it starts and ends. `runtimeTaskId` is the id the gate hook also reports as the worker agent's `agent_id`, and
+ * `delegationCallId` is the manager agent's delegation call that started it.
+ */
+export type TaskEvent =
+  | {
+      type: "worker_started";
+      runtimeTaskId: string;
+      delegationCallId: string;
+      description: string;
+      prompt: string;
+      background: boolean;
+      at: string;
+    }
+  | {
+      type: "worker_ended";
+      runtimeTaskId: string;
+      delegationCallId: string | null;
+      /** The runtime's own word for how it ended, e.g. "completed", "failed" or "stopped". */
+      // eslint-disable-next-line no-restricted-syntax -- the runtime's own word, kept as reported; the engine maps it
+      status: string;
+      summary: string | null;
+      at: string;
+    };
+
+/** Every event a manager agent's session hands the engine. */
+export type SessionEvent = RuntimeEvent | TaskEvent;

@@ -42,5 +42,3 @@ Every doc uses these terms with these meanings, and each concept has exactly one
 | Quit | Fully stop Mia's server and clients cleanly, excluding external services. |
 
 Avoid unqualified “session”: distinguish conversation, voice-model connection, and agent session.
-
-D1's evidence records and its agent prompts (`prompts/agent-v1.md`, `prompts/agent-v2.md`) predate these terms and stay as recorded; “active agent” there means D1's single agent.

@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import assertScenario from "./assert.ts";
-import { readScenarioList, SCENARIOS, ScenarioNameSchema } from "./scenarios.ts";
+import type { ServerEvent } from "@mia/protocol";
+import { quietAfter, readScenarioList, SCENARIOS, ScenarioNameSchema } from "./scenarios.ts";
 
 const declared = [...ScenarioNameSchema.options].toSorted();
 
@@ -42,5 +43,36 @@ describe("live scenario names", () => {
         ok: false,
         error: `unknown scenario ${JSON.stringify(entry)}; declared: ${ScenarioNameSchema.options.join(", ")}`,
       });
+  });
+
+  it("is quiet only once every task ended and a later turn reported it", () => {
+    const at = (type: string, payload: Record<string, unknown> = {}) =>
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- a minimal event stream for the decision
+      ({
+        type,
+        sequence: null,
+        payload: { conversation_id: "conversation", ...payload },
+      }) as unknown as ServerEvent;
+    const delegated = [
+      at("turn_started", { turn_id: "turn_1" }),
+      at("task_started", { task_id: "task_1" }),
+      at("turn_finished", { turn_id: "turn_1" }),
+    ];
+    expect(quietAfter(delegated, 0)).toBe(false);
+    const ended = [...delegated, at("task_finished", { task_id: "task_1" })];
+    expect(quietAfter(ended, 0)).toBe(false);
+    const reporting = [...ended, at("turn_started", { turn_id: "turn_2" })];
+    expect(quietAfter(reporting, 0)).toBe(false);
+    expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 0)).toBe(true);
+    // An interrupted task ends with its interruption's outcome.
+    const interrupted = [
+      ...delegated,
+      at("interruption_outcome", { task_id: "task_1" }),
+      at("turn_started", { turn_id: "turn_2" }),
+      at("turn_finished", { turn_id: "turn_2" }),
+    ];
+    expect(quietAfter(interrupted, 0)).toBe(true);
+    // A message sent after the conversation went quiet is not settled by the earlier turns.
+    expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 5)).toBe(false);
   });
 });

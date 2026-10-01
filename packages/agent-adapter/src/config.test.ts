@@ -14,13 +14,14 @@ const validRuntime = (): RuntimeConfig => ({
   model: "fixture",
   effort: "medium",
   workingDirectory: "/work",
-  builtinTools: [],
   mcpServers: { fixture: { type: "stdio", command: "fixture", args: [] } },
   toolPolicy: { mcp__fixture__read: "allow" },
   agentPromptFile: "/prompt.md",
   outputDirectories: [],
   env: {},
   extraSettings: {},
+  workerAgent: { description: "does tool work", promptFile: "/worker.md" },
+  exclusiveTools: [],
 });
 
 describe("policyFor", () => {
@@ -88,9 +89,9 @@ describe("validateRuntimeConfig", () => {
       message: "name is reserved",
     },
     {
-      name: "built-in tools",
-      overrides: { builtinTools: ["Bash"] },
-      message: 'builtinTools includes "Bash"',
+      name: "an exclusive tool the policy does not list",
+      overrides: { exclusiveTools: ["mcp__fixture__click"] },
+      message: "exclusiveTools names mcp__fixture__click",
     },
   ];
   it.each(invalidCases)("rejects $name", ({ overrides, message }) => {

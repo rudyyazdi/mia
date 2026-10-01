@@ -24,7 +24,7 @@ export interface PermissionRequest {
   toolUseId: string | undefined;
   raw: unknown;
   receivedAt: string;
-  /** Aborts if the runtime abandons the prompt (turn aborted or connection closed) before a decision. */
+  /** Aborts if the runtime abandons the prompt (its call aborted or connection closed) before a decision. */
   abandoned: AbortSignal;
 }
 
@@ -35,9 +35,9 @@ export type PermissionDecision =
 export type PermissionHandler = (request: PermissionRequest) => Promise<PermissionDecision>;
 
 /**
- * The approval bridge: an MCP server Claude Code calls (via --permission-prompt-tool) for every
- * tool call its rules do not already deny. It holds the call until Mia's handler decides.
- * Without an active handler it denies: no decision is ever inferred.
+ * The approval bridge: an MCP server Claude Code calls (via --permission-prompt-tool) for a tool call that needs
+ * permission and that the gate hook (see gate.ts) left undecided, because the hook was missing, crashed or timed out.
+ * Mia's handler denies every such call; without a handler it denies too: no decision is ever inferred.
  */
 export class ApprovalBridge {
   private handler: PermissionHandler | null = null;

@@ -61,10 +61,12 @@ export const overlaidEnvironment = (
 ): Record<string, string> => {
   const merged: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) merged[name] = value;
-  if (merged.PATH !== undefined)
-    merged.PATH = merged.PATH.split(delimiter)
-      .filter((entry) => !isPackageBin(entry))
-      .join(delimiter);
+  if (merged.PATH !== undefined) {
+    const kept = merged.PATH.split(delimiter).filter((entry) => !isPackageBin(entry));
+    // An empty PATH would search the working directory; with nothing left, spawn's default search path applies.
+    if (kept.length === 0) delete merged.PATH;
+    else merged.PATH = kept.join(delimiter);
+  }
   return Object.assign(merged, overlay);
 };
 

@@ -33,7 +33,7 @@
   },
   "architectureDocument": "../../docs/PLAN.md",
   "notes": [
-    "gpt-6-luna is the model the Codex probe and live lane were run with. Run `npm run probe -- --runtime codex --model <model>` before relying on another.",
+    "gpt-6-luna is the model the Codex probe and live lane were run with, at low effort. Run `npm run probe -- --runtime codex --model <model>` before relying on another.",
     "Codex reaches MCP servers over streamable HTTP (`http`) or `stdio`; it has no SSE transport.",
     "Mia runs Codex with its own Codex home under stateDirectory (`codex-home`), linked to your `~/.codex/auth.json` login.",
     "Replace the example MCP server with your own; list every tool explicitly in toolPolicy."

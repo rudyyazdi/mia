@@ -8,6 +8,8 @@ const at = "2026-01-01T00:00:00.000Z";
 const session = (fields: Partial<SessionRecord>): SessionRecord => ({
   name: "s",
   session_id: "s",
+  conversation_id: "s",
+  session_index: 1,
   events: [],
   gate_requests: [],
   dropped: 0,
@@ -97,6 +99,19 @@ describe("workerGateChecks", () => {
     });
   });
 
+  it("fails an allowed call the stream never proposed", () => {
+    const allowed = changeRequest("a1", { behavior: "allow" });
+    const unstreamed = { ...allowed, request: { ...allowed.request, toolUseId: "exec_change" } };
+    expect(
+      workerGateChecks(
+        session({
+          events: [started, proposal("toolu_delegation")],
+          gate_requests: [allowed, unstreamed],
+        }),
+      ).stream_attribution_matches_gate,
+    ).toBe(false);
+  });
+
   it("counts a call the gate saw with no worker agent as the manager agent's own", () => {
     const checks = workerGateChecks(
       session({ events: [started, proposal(null)], gate_requests: [changeRequest(null)] }),
@@ -153,9 +168,25 @@ describe("workerDenyChecks", () => {
     expect(workerDenyChecks(session({ events: [started, forbiddenProposal] })).denied_by).toBe(
       "runtime rule (proposed, never reached the gate)",
     );
-    expect(workerDenyChecks(session({ events: [started] })).denied_by).toBe(
+    const endedWorker: SessionEvent = {
+      type: "worker_ended",
+      runtimeTaskId: "a1",
+      delegationCallId: "toolu_delegation",
+      end: "completed",
+      runtimeStatus: "completed",
+      summary: null,
+      at,
+    };
+    expect(workerDenyChecks(session({ events: [started, endedWorker] })).denied_by).toBe(
       "runtime rule (tool withheld from the worker agent)",
     );
+  });
+
+  it("claims nothing for a session in which no worker agent ran", () => {
+    expect(workerDenyChecks(session({}))).toMatchObject({
+      worker_ran_the_task: false,
+      denied_by: "inconclusive (no worker agent ran the task)",
+    });
   });
 
   it("fails a denied call that ran at the fixture", () => {

@@ -83,4 +83,15 @@ describe("overlaidEnvironment", () => {
     // A PATH the profile sets is its own choice, kept as it is.
     expect(overlaidEnvironment(inherited, { PATH: packageBin }).PATH).toBe(packageBin);
   });
+
+  it("leaves PATH unset, not empty, when every inherited entry was a package's bin", () => {
+    using work = mkdtempDisposableSync(join(tmpdir(), "mia-work-"));
+    script(join(work.path, "sh"));
+    const launch = overlaidEnvironment({ PATH: "/repo/node_modules/.bin" }, {});
+    expect(launch.PATH).toBeUndefined();
+    // Unset falls back to spawn's default search path; an empty PATH would have found the working directory's sh.
+    expect(resolveExecutableSync("sh", { path: launch.PATH, cwd: work.path })).not.toBe(
+      join(work.path, "sh"),
+    );
+  });
 });

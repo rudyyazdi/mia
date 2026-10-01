@@ -6,6 +6,7 @@ import {
   ToolGate,
   untilAborted,
   LiveCallBudget,
+  notPermitted,
   policyFor,
   validateRuntimeConfig,
   type GateDecision,
@@ -18,12 +19,6 @@ import { onRuntime, startRuntime } from "@mia/runtimes";
 import type { ProbeDeadlines, ProbeOptions, SessionRecord, SessionSpec } from "./record.ts";
 
 export const log = (...args: unknown[]) => console.log(`[probe]`, ...args);
-
-/** What the engine answers a call its policy denies; the probe answers it the same, before the step decides. */
-const POLICY_DENIED: GateDecision = {
-  behavior: "deny",
-  message: "Mia's tool policy denies this tool.",
-};
 
 /** How many events, and how many gate requests, one session's record keeps; past it they are only counted. */
 const MAX_RECORDED = 10_000;
@@ -186,9 +181,12 @@ export class ProbeContext {
   async runSession(spec: SessionSpec): Promise<SessionRecord> {
     validateRuntimeConfig(spec.config);
     const sessionId = randomUUID();
+    const conversation = spec.conversation ?? { id: sessionId, sessionIndex: 1, resume: false };
     const session: SessionRecord = {
       name: spec.name,
       session_id: sessionId,
+      conversation_id: conversation.id,
+      session_index: conversation.sessionIndex,
       events: [],
       gate_requests: [],
       dropped: 0,
@@ -200,7 +198,6 @@ export class ProbeContext {
     const { gate, harness, env } = this.services;
     this.takeLiveCall(spec.name, spec.config.model);
     const workerPrompt = await readFile(spec.config.workerAgent.promptFile, "utf8");
-    const conversation = spec.conversation ?? { id: sessionId, sessionIndex: 1, resume: false };
     // The server's own start: its runtime, its backstops, and the probe's out directory as the state directory.
     const runtime = await startRuntime({
       config: spec.config,
@@ -218,7 +215,7 @@ export class ProbeContext {
       this.wakeWaiters();
       const decision =
         policyFor(spec.config, request.toolName) === "deny"
-          ? POLICY_DENIED
+          ? notPermitted(request.toolName)
           : await spec.decide(request, session);
       const { abandoned, ...seen } = request;
       if (session.gate_requests.length >= MAX_RECORDED) {

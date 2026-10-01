@@ -40,11 +40,14 @@ const fixtureRunsOf = (session: SessionRecord, tool: string): number =>
  * allowed. A call that bypassed the hook, or a call sent again after it was allowed once, would break it.
  */
 const everyFixtureRunAllowed = (session: SessionRecord): boolean =>
-  ["read", "change", "slow", "artifact", "forbidden"].every(
-    (tool) =>
-      fixtureRunsOf(session, tool) <=
-      gateRequestsFor(session, tool).filter((entry) => entry.decision.behavior === "allow").length,
-  );
+  new Set(ledgerOf(session).map((entry) => entry.tool))
+    .values()
+    .every(
+      (tool) =>
+        fixtureRunsOf(session, tool) <=
+        gateRequestsFor(session, tool).filter((entry) => entry.decision.behavior === "allow")
+          .length,
+    );
 
 /** Every fixture call the gate saw came from a worker agent the runtime reported starting. */
 const everyFixtureCallFromAWorker = (session: SessionRecord): boolean => {
@@ -71,25 +74,27 @@ const streamedOfAsked = (session: SessionRecord): string => {
 };
 
 /**
- * Every fixture call the stream proposed names the delegation call that started the worker agent the gate saw make
- * it, so the stream and the gate agree on which worker agent made it; at least one call was streamed.
+ * The stream and the gate agree on which worker agent made each fixture call: a streamed call names the delegation
+ * call that started the worker agent the gate saw make it. Every allowed call must be streamed; only a denied one may
+ * be missing, as Codex never streams a call its hook refused.
  */
 const streamAttributionAgrees = (session: SessionRecord): boolean => {
   const delegationOf = new Map(
     workersOf(session).map((worker) => [worker.runtimeTaskId, worker.delegationCallId]),
   );
   const proposals = proposalsOf(session);
-  const streamed = fixtureRequestsOf(session).flatMap((entry) =>
-    proposals
-      .filter((proposal) => proposal.runtimeCallId === entry.request.toolUseId)
-      .map((proposal) => ({ entry, proposal })),
-  );
+  const asked = fixtureRequestsOf(session);
   return (
-    streamed.length > 0 &&
-    streamed.every(
-      ({ entry, proposal }) =>
-        proposal.parentCallId === delegationOf.get(entry.request.agentId ?? ""),
-    )
+    asked.length > 0 &&
+    asked.every((entry) => {
+      const streamed = proposals.filter(
+        (proposal) => proposal.runtimeCallId === entry.request.toolUseId,
+      );
+      if (streamed.length === 0) return entry.decision.behavior === "deny";
+      return streamed.every(
+        (proposal) => proposal.parentCallId === delegationOf.get(entry.request.agentId ?? ""),
+      );
+    })
   );
 };
 
@@ -120,20 +125,28 @@ export const workerGateChecks = (session: SessionRecord): Checks => {
 /**
  * Where the policy stopped a worker agent's call of a denied tool: the gate denied it (Codex), the runtime refused a
  * call it streamed, or the runtime never offered the tool at all (Claude Code's deny rule hides it from the worker).
+ * Nothing is claimed unless a worker agent ran the task to its end.
  */
 const deniedBy = (session: SessionRecord): string => {
   if (gateRequestsFor(session, "forbidden").length > 0) return "gate";
-  return proposalsOf(session).some(
-    (proposal) => proposal.toolIdentity === "mcp__fixture__forbidden",
-  )
-    ? "runtime rule (proposed, never reached the gate)"
-    : "runtime rule (tool withheld from the worker agent)";
+  if (proposalsOf(session).some((proposal) => proposal.toolIdentity === "mcp__fixture__forbidden"))
+    return "runtime rule (proposed, never reached the gate)";
+  return workerRanToItsEnd(session)
+    ? "runtime rule (tool withheld from the worker agent)"
+    : "inconclusive (no worker agent ran the task)";
 };
 
-/** A worker agent asked to call a policy-denied tool: every gate decision on it was a denial, and it never ran. */
+const workerRanToItsEnd = (session: SessionRecord): boolean =>
+  workersOf(session).length > 0 && session.events.some((event) => event.type === "worker_ended");
+
+/**
+ * A worker agent asked to call a policy-denied tool ran its task; every gate decision on the call was a denial, and
+ * it never ran.
+ */
 export const workerDenyChecks = (session: SessionRecord): Checks => {
   const asked = gateRequestsFor(session, "forbidden");
   return {
+    worker_ran_the_task: workerRanToItsEnd(session),
     denied_by: deniedBy(session),
     gate_denied_every_ask: asked.every((entry) => entry.decision.behavior === "deny"),
     denied_call_never_ran: fixtureRunsOf(session, "forbidden") === 0,

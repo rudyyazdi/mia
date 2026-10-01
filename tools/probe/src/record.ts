@@ -39,6 +39,10 @@ export interface ProbeDeadlines {
 export interface SessionRecord {
   name: string;
   session_id: string;
+  /** The runtime conversation the session ran, which names its runtime directory; shared by a resumed session. */
+  conversation_id: string;
+  /** Numbers the session within its conversation, from 1. */
+  session_index: number;
   events: SessionEvent[];
   gate_requests: {
     request: Omit<GateRequest, "abandoned">;

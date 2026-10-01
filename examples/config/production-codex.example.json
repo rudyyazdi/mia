@@ -1,0 +1,41 @@
+{
+  "profile": "production-codex",
+  "stateDirectory": "${XDG_STATE_HOME}/mia-codex",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 48733,
+    "secretFile": "${XDG_STATE_HOME}/mia-codex/client-secret"
+  },
+  "runtime": {
+    "kind": "codex",
+    "executable": "codex",
+    "model": "gpt-6-luna",
+    "effort": "medium",
+    "workingDirectory": "${XDG_STATE_HOME}/mia-codex/work",
+    "mcpServers": {
+      "example": {
+        "type": "http",
+        "url": "http://127.0.0.1:9000/mcp"
+      }
+    },
+    "toolPolicy": {
+      "mcp__example__lookup": "allow",
+      "mcp__example__act": "ask"
+    },
+    "agentPromptFile": "../../prompts/manager-v2.md",
+    "workerAgent": {
+      "description": "Runs one task that needs tools, calling exactly the tools the task names. Use it for every tool call.",
+      "promptFile": "../../prompts/worker-v1.md"
+    },
+    "exclusiveTools": [],
+    "outputDirectories": ["${XDG_STATE_HOME}/mia-codex/work/outputs"],
+    "env": {}
+  },
+  "architectureDocument": "../../docs/PLAN.md",
+  "notes": [
+    "gpt-6-luna is the model the Codex probe and live lane were run with. Run `npm run probe -- --runtime codex --model <model>` before relying on another.",
+    "Codex reaches MCP servers over streamable HTTP (`http`) or `stdio`; it has no SSE transport.",
+    "Mia runs Codex with its own Codex home under stateDirectory (`codex-home`), linked to your `~/.codex/auth.json` login.",
+    "Replace the example MCP server with your own; list every tool explicitly in toolPolicy."
+  ]
+}

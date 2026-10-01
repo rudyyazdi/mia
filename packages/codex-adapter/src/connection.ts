@@ -20,8 +20,11 @@ export class CodexConnection {
   /** `write` writes one line to the server's stdin, returning false once it no longer can. */
   constructor(private readonly write: (line: string) => boolean) {}
 
-  /** Resolves to the request's result, or rejects with the server's error, or once the connection closes. */
-  request(method: string, params: unknown): Promise<unknown> {
+  /**
+   * Resolves to the request's result, or rejects with the server's error, once the connection closes, or once
+   * `signal` aborts, when its answer is no longer awaited.
+   */
+  request(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
     if (this.#closed !== null) return Promise.reject(new RpcError(`${method}: ${this.#closed}`));
     if (this.#pending.size >= MAX_PENDING_REQUESTS)
       return Promise.reject(new RpcError(`${method}: too many requests in flight`));
@@ -33,9 +36,16 @@ export class CodexConnection {
       this.#pending.delete(id);
       return Promise.reject(new RpcError(`${method}: the server no longer reads input`));
     }
-    return answer.promise.catch((error: unknown) => {
-      throw new RpcError(`${method}: ${errorMessage(error)}`);
-    });
+    const abandon = () => {
+      if (this.#pending.delete(id)) answer.reject(new Error("no answer in time"));
+    };
+    if (signal.aborted) abandon();
+    else signal.addEventListener("abort", abandon, { once: true });
+    return answer.promise
+      .catch((error: unknown) => {
+        throw new RpcError(`${method}: ${errorMessage(error)}`);
+      })
+      .finally(() => signal.removeEventListener("abort", abandon));
   }
 
   notify(method: string, params?: unknown): void {

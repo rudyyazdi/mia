@@ -1,34 +1,44 @@
 import { describe, expect, it } from "vitest";
+import type { GateRequest } from "@mia/agent-adapter";
 import { ProposalRendezvous } from "./proposals.ts";
 
-const call = { toolName: "Task", input: { subagent_type: "mia-worker" } };
+const call = (toolName: string): GateRequest => ({
+  toolName,
+  input: {},
+  toolUseId: "call_1",
+  agentId: null,
+  agentType: null,
+  raw: {},
+  receivedAt: "2026-01-01T00:00:00.000Z",
+  abandoned: new AbortController().signal,
+});
+const open = () => new AbortController().signal;
 
 describe("ProposalRendezvous", () => {
-  it("hands over a call the gate heard before stdout reported its hook", async () => {
+  it("reads a call the gate heard first only once stdout reaches its hook", async () => {
     const rendezvous = new ProposalRendezvous();
-    rendezvous.offer("call_1", call);
-    expect(await rendezvous.take("call_1", new AbortController().signal)).toEqual(call);
-    // Taken once: a second report of the same hook finds nothing.
-    const gone = new AbortController();
-    gone.abort();
-    expect(await rendezvous.take("call_1", gone.signal)).toBe(null);
+    // What the call reads as depends on what stdout has reported by then, such as a worker agent's start.
+    let known = "before";
+    const offered = rendezvous.offer("call_1", () => call(known), open());
+    known = "after";
+    expect((await rendezvous.take("call_1", open()))?.toolName).toBe("after");
+    expect((await offered).toolName).toBe("after");
   });
 
-  it("waits for the gate when stdout reported the hook first", async () => {
+  it("hands a call over when stdout reported its hook first", async () => {
     const rendezvous = new ProposalRendezvous();
-    const taken = rendezvous.take("call_1", new AbortController().signal);
-    rendezvous.offer("call_2", { toolName: "TaskStop", input: {} });
-    rendezvous.offer("call_1", call);
-    expect(await taken).toEqual(call);
+    const taken = rendezvous.take("call_1", open());
+    await rendezvous.offer("call_2", () => call("other"), AbortSignal.abort());
+    expect((await rendezvous.offer("call_1", () => call("Task"), open())).toolName).toBe("Task");
+    expect((await taken)?.toolName).toBe("Task");
   });
 
-  it("gives up once its deadline aborts, and keeps a later offer for its own report", async () => {
+  it("reads a call on its own once its deadline passes, and stdout then finds nothing", async () => {
     const rendezvous = new ProposalRendezvous();
     const deadline = new AbortController();
-    const taken = rendezvous.take("call_1", deadline.signal);
+    const offered = rendezvous.offer("call_1", () => call("Task"), deadline.signal);
     deadline.abort();
-    expect(await taken).toBe(null);
-    rendezvous.offer("call_1", call);
-    expect(await rendezvous.take("call_1", new AbortController().signal)).toEqual(call);
+    expect((await offered).toolName).toBe("Task");
+    expect(await rendezvous.take("call_1", AbortSignal.abort())).toBe(null);
   });
 });

@@ -98,6 +98,11 @@ export class CodexTranslator {
     return null;
   }
 
+  /** A worker agent's final message as it wrote it, unredacted, or null when it wrote none or is not known. */
+  finalTextOf(threadId: string): string | null {
+    return this.#workers.get(threadId)?.finalText ?? null;
+  }
+
   /** The worker agent's path, as the manager agent names it, or null when it is not known. */
   pathOf(threadId: string): string | null {
     return this.#workers.get(threadId)?.path ?? null;

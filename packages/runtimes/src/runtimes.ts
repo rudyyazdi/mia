@@ -21,8 +21,8 @@ export interface RuntimeStart {
   /** Where the runtime may keep state across sessions: Codex keeps its own home (`codex-home`) here. */
   stateDirectory: string;
   /**
-   * A fresh deadline for how long a session waits to pair a manager agent's call with the runtime's report of it;
-   * the entry point builds it (the server passes its attribution deadline).
+   * A fresh deadline for each wait on the runtime's reply: for Codex, its answer to a request, or its report of a
+   * manager agent's call. The entry point builds it (the server passes its attribution deadline).
    */
   attributionDeadline: () => AbortSignal;
 }
@@ -44,7 +44,7 @@ export const startRuntime = (input: RuntimeStart): Promise<AgentRuntime> =>
         gate: input.gate,
         env: input.env,
         codexHome: join(input.stateDirectory, "codex-home"),
-        proposalDeadline: input.attributionDeadline,
+        replyDeadline: input.attributionDeadline,
       }),
     )
     .exhaustive();

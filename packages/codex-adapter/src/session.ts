@@ -38,10 +38,10 @@ interface CodexDeps {
   env: NodeJS.ProcessEnv;
   codexHome: string;
   /**
-   * A fresh deadline for how long stdout waits for the gate to hear a manager agent's call whose hook Codex reported
-   * starting (see `ProposalRendezvous`); the entry point builds it.
+   * A fresh deadline for each wait on Codex: for its answer to a request, and for a manager agent's call to be paired
+   * with stdout's report of its hook (see `ProposalRendezvous`). The entry point builds it.
    */
-  proposalDeadline: () => AbortSignal;
+  replyDeadline: () => AbortSignal;
 }
 
 /** Codex, started: it owns nothing besides its sessions, and the caller owns the gate. */
@@ -124,12 +124,17 @@ class CodexSession {
     this.#connection = new CodexConnection((line) => this.#write(line));
   }
 
-  /** Decides a call through the caller's handler, in Mia's vocabulary, and remembers an allowed delegation. */
+  /**
+   * Decides a call through the caller's handler, in Mia's vocabulary, and remembers an allowed delegation. A manager
+   * agent's call is read once stdout reaches its hook, so a stop finds the worker agents stdout reported before it.
+   */
   async decide(request: GateRequest): Promise<GateDecision> {
-    const mia = miaGateRequest(request, (target) => this.#translator.taskIdOf(target));
-    const callId = mia.toolUseId;
-    if (mia.agentId === null && callId !== undefined)
-      this.#proposals.offer(callId, { toolName: mia.toolName, input: mia.input });
+    const read = () => miaGateRequest(request, (target) => this.#translator.taskIdOf(target));
+    const callId = request.toolUseId;
+    const mia =
+      request.agentId === null && callId !== undefined
+        ? await this.#proposals.offer(callId, read, this.deps.replyDeadline())
+        : read();
     const decision = await this.options.decide(mia);
     const delegation = mia.agentId === null && mia.toolName === DELEGATE_TOOL;
     if (delegation && callId !== undefined && decision.behavior === "allow") {
@@ -161,9 +166,11 @@ class CodexSession {
         this.#pump();
       },
       stop: async (deadline) => {
-        this.#stopped = true;
         const running = this.#runtime;
-        if (!running || running.hasExited()) return this.#cancellation;
+        // A runtime that already exited ends as it did; only one that is still running is killed.
+        if (running?.hasExited()) return this.#cancellation;
+        this.#stopped = true;
+        if (!running) return this.#cancellation;
         this.#cancellation = await running.kill(deadline);
         return this.#cancellation;
       },
@@ -250,10 +257,15 @@ class CodexSession {
   }): Promise<void> {
     const rpc = this.#connection;
     const { config } = this.deps;
-    await rpc.request("initialize", {
-      clientInfo: { name: "mia", title: "Mia", version: ADAPTER_VERSION },
-      capabilities: { experimentalApi: true },
-    });
+    const reply = this.deps.replyDeadline;
+    await rpc.request(
+      "initialize",
+      {
+        clientInfo: { name: "mia", title: "Mia", version: ADAPTER_VERSION },
+        capabilities: { experimentalApi: true },
+      },
+      reply(),
+    );
     rpc.notify("initialized");
     await this.#trustGateHook();
     const thread = {
@@ -265,12 +277,12 @@ class CodexSession {
     };
     const started = ThreadResultSchema.parse(
       instructions.resumeThread === null
-        ? await rpc.request("thread/start", { ...thread, ephemeral: false })
-        : await rpc.request("thread/resume", {
-            ...thread,
-            threadId: instructions.resumeThread,
-            excludeTurns: true,
-          }),
+        ? await rpc.request("thread/start", { ...thread, ephemeral: false }, reply())
+        : await rpc.request(
+            "thread/resume",
+            { ...thread, threadId: instructions.resumeThread, excludeTurns: true },
+            reply(),
+          ),
     );
     const threadId = started.thread.id;
     this.#translator.adopt({ threadId, model: started.model });
@@ -291,11 +303,19 @@ class CodexSession {
     const hook = { source: this.plan.files.hooks, command: this.plan.hookCommand };
     const list = async () =>
       HooksListResultSchema.parse(
-        await this.#connection.request("hooks/list", { cwds: [this.deps.config.workingDirectory] }),
+        await this.#connection.request(
+          "hooks/list",
+          { cwds: [this.deps.config.workingDirectory] },
+          this.deps.replyDeadline(),
+        ),
       );
     const before = gateHookTrust(await list(), hook);
     if (before.kind === "untrusted")
-      await this.#connection.request("config/batchWrite", trustEdit(before.key, before.hash));
+      await this.#connection.request(
+        "config/batchWrite",
+        trustEdit(before.key, before.hash),
+        this.deps.replyDeadline(),
+      );
     const after = before.kind === "untrusted" ? gateHookTrust(await list(), hook) : before;
     if (after.kind !== "trusted")
       throw new Error(`Codex will not run Mia's gate hook (${after.kind})`);
@@ -304,7 +324,7 @@ class CodexSession {
   /** Starts the manager agent's next turn when it is idle and something is queued; ends input once all is done. */
   #pump(): void {
     const threadId = this.#threadId;
-    if (this.#phase !== "idle" || threadId === null || this.#stopped) return;
+    if (this.#phase !== "idle" || threadId === null || this.#stopped || this.#inputEnded) return;
     const next = this.#queue.take();
     if (!next) {
       if (this.#closed && this.#translator.runningWorkers === 0) this.#endInput();
@@ -316,17 +336,21 @@ class CodexSession {
         input: [{ type: "text", text, text_elements: [] }],
         clientUserMessageId: runtimeMessageId,
       }))
-      .with({ kind: "ends" }, ({ ends }) => ({
-        input: [{ type: "text", text: reportOf(ends), text_elements: [] }],
+      .with({ kind: "ends" }, ({ ends, unlisted }) => ({
+        input: [{ type: "text", text: reportOf(ends, unlisted), text_elements: [] }],
       }))
       .exhaustive();
+    // A turn Codex refused would leave its message or its ends unreported for good, so the session ends instead,
+    // and the engine records what it had sent as lost with the session.
     this.#connection
-      .request("turn/start", { threadId, effort: this.deps.config.effort, ...params })
-      .catch((error: unknown) => {
-        this.#note(`[mia] Codex did not start a turn: ${errorMessage(error)}`);
-        this.#phase = "idle";
-        this.#pump();
-      });
+      .request(
+        "turn/start",
+        { threadId, effort: this.deps.config.effort, ...params },
+        this.deps.replyDeadline(),
+      )
+      .catch((error: unknown) =>
+        this.#giveUp(`Codex did not start a turn: ${errorMessage(error)}`),
+      );
   }
 
   /** Gives up on the session: it ends as failed once Codex exits at the end of its input. */
@@ -389,7 +413,7 @@ class CodexSession {
     const { onEvent } = this.options;
     const hookCall = this.#translator.managerHookStart(notification);
     if (hookCall !== null) {
-      const call = await this.#proposals.take(hookCall, this.deps.proposalDeadline());
+      const call = await this.#proposals.take(hookCall, this.deps.replyDeadline());
       if (call)
         await onEvent({
           type: "tool_proposed",
@@ -415,7 +439,8 @@ class CodexSession {
         path: this.#translator.pathOf(event.runtimeTaskId) ?? event.runtimeTaskId,
         threadId: event.runtimeTaskId,
         end: event.end,
-        summary: event.summary,
+        // The event's summary is redacted for the records; the manager agent reads what the worker agent wrote.
+        summary: this.#translator.finalTextOf(event.runtimeTaskId),
       });
       this.#pump();
     }

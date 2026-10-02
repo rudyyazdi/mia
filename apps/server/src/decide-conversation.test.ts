@@ -500,6 +500,18 @@ describe("stops and ends", () => {
     expect(notes[0]?.note).not.toContain("mcp__fixture__read");
   });
 
+  it("notes a call a stop invalidated before its worker agent ended", () => {
+    const held = gate({ policy: "ask", toolIdentity: "mcp__fixture__change" });
+    const stopped = after(running("a1"), held, { kind: "stop_all", ...drawn, by: "client" });
+    const ended = accepted(stopped, workerEnded("a1", "stopped"));
+    expect(ended.effects).toContainEqual(
+      expect.objectContaining({
+        kind: "note_end",
+        note: expect.stringContaining("mcp__fixture__change did not run"),
+      }),
+    );
+  });
+
   it("notes nothing for a worker agent whose calls all had their result", () => {
     const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
     const ended = accepted(after(running("a1"), done, result("toolu_done")), workerEnded("a1"));

@@ -795,9 +795,11 @@ const endTask = (
 };
 
 /**
- * The longest rendering of one call's arguments a note names it by. A note names at most every call of the tasks it
- * covers (MAX_CALLS_PER_TASK each, MAX_RUNNING_TASKS of them, plus MAX_UNSETTLED_CALLS), so this bounds its length.
+ * The most calls one note names. A note can cover every call of the tasks a session ended with (MAX_CALLS_PER_TASK
+ * each, MAX_RUNNING_TASKS of them, plus MAX_UNSETTLED_CALLS), so it counts the rest to stay a few kilobytes.
  */
+export const MAX_NOTED_CALLS = 32;
+/** The longest rendering of one call's arguments a note names it by; with MAX_NOTED_CALLS it bounds a note's length. */
 const MAX_NOTED_ARGUMENTS = 200;
 /** The longest rendering of a call's arguments an approval request shows the person deciding it. */
 const MAX_APPROVAL_ARGUMENTS = 500;
@@ -821,6 +823,13 @@ const callLine = (
 const notedCall = (call: Pick<CallState, "toolIdentity" | "redactedArguments">): string =>
   callLine(call, MAX_NOTED_ARGUMENTS);
 
+/** A note's calls, each already in its line: the first MAX_NOTED_CALLS of them, then how many more there were. */
+const notedCalls = (lines: readonly string[]): string => {
+  const named = lines.slice(0, MAX_NOTED_CALLS).join("; ");
+  const more = lines.length - MAX_NOTED_CALLS;
+  return more > 0 ? `${named}; and ${more} more` : named;
+};
+
 /**
  * Mia's note on a worker agent's end, or null when every call it made had its result. A worker agent that ends without
  * a call's result can only guess at it (it may say a call it was never let make "has not returned yet"), so the note
@@ -835,7 +844,7 @@ const endNoteOf = (calls: readonly CallState[]): string | null => {
     return [];
   });
   if (outcomes.length === 0) return null;
-  return `[Mia note] Mia's record of the calls this worker agent had no result for, which overrides anything it says about them: ${outcomes.join("; ")}.`;
+  return `[Mia note] Mia's record of the calls this worker agent had no result for, which overrides anything it says about them: ${notedCalls(outcomes)}.`;
 };
 
 /** The runtime reports a worker agent's end: its task ends, a coming turn reports it, and Mia notes what its calls came to. */
@@ -1480,7 +1489,7 @@ const noteAfterSession = (input: {
   if (input.ended.length > 0) parts.push(`${input.ended.length} task(s) did not finish.`);
   if (unknownCalls.length > 0)
     parts.push(
-      `These calls were running and their outcome is unknown: ${unknownCalls.join("; ")}. Do not assume they did or did not happen.`,
+      `These calls were running and their outcome is unknown: ${notedCalls(unknownCalls)}. Do not assume they did or did not happen.`,
     );
   if (input.lost > 0) parts.push(`${input.lost} message(s) sent to you were never read.`);
   return parts.join(" ");

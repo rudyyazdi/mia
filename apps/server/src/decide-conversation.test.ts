@@ -486,18 +486,25 @@ describe("stops and ends", () => {
   });
 
   it("notes for the manager agent what a worker agent's end settled, which the worker agent cannot know", () => {
-    const held = gate({ policy: "ask", toolIdentity: "mcp__fixture__change" });
+    // Two calls to one tool, told apart by their arguments: only the one without its result is noted.
+    const change = { policy: "ask" as const, toolIdentity: "mcp__fixture__change" };
+    const held = gate({ ...change, input: { delta: 4 } });
     const released = gate({ policy: "allow", toolIdentity: "mcp__fixture__slow" });
-    const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
+    const done = gate({
+      ...change,
+      policy: "allow",
+      input: { delta: 1 },
+      runtimeCallId: "toolu_done",
+    });
     const state = after(running("a1"), held, released, done, result("toolu_done"));
     const notes = accepted(state, workerEnded("a1")).effects.flatMap((effect) =>
       effect.kind === "note_end" ? [effect] : [],
     );
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatchObject({ runtimeTaskId: "a1" });
-    expect(notes[0]?.note).toContain("mcp__fixture__change did not run");
-    expect(notes[0]?.note).toContain("mcp__fixture__slow has an unknown outcome");
-    expect(notes[0]?.note).not.toContain("mcp__fixture__read");
+    expect(notes[0]?.note).toContain('mcp__fixture__change {"delta":4} did not run');
+    expect(notes[0]?.note).toContain("mcp__fixture__slow {} has an unknown outcome");
+    expect(notes[0]?.note).not.toContain('{"delta":1}');
   });
 
   it("notes a call a stop invalidated before its worker agent ended", () => {
@@ -507,7 +514,7 @@ describe("stops and ends", () => {
     expect(ended.effects).toContainEqual(
       expect.objectContaining({
         kind: "note_end",
-        note: expect.stringContaining("mcp__fixture__change did not run"),
+        note: expect.stringContaining("mcp__fixture__change {} did not run"),
       }),
     );
   });
@@ -516,5 +523,13 @@ describe("stops and ends", () => {
     const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
     const ended = accepted(after(running("a1"), done, result("toolu_done")), workerEnded("a1"));
     expect(effectLabels(ended.effects)).not.toContain("note_end");
+  });
+
+  it("names an unsettled call in the note after a session by its arguments, cut to a bound", () => {
+    const slow = gate({ toolIdentity: "mcp__fixture__slow", input: { text: "x".repeat(1000) } });
+    const state = after(running("a1"), slow, workerEnded("a1"));
+    const { pendingNote } = accepted(state, sessionEnded("ended")).next;
+    // 200 characters of rendered arguments: `{"text":"` and 191 of the text.
+    expect(pendingNote).toContain(`mcp__fixture__slow {"text":"${"x".repeat(191)}…`);
   });
 });

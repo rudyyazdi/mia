@@ -526,10 +526,11 @@ describe("stops and ends", () => {
   });
 
   it("names an unsettled call in the note after a session by its arguments, cut to a bound", () => {
-    const slow = gate({ toolIdentity: "mcp__fixture__slow", input: { text: "x".repeat(1000) } });
+    const text = `${"x".repeat(190)}${"😀".repeat(100)}`;
+    const slow = gate({ toolIdentity: "mcp__fixture__slow", input: { text } });
     const state = after(running("a1"), slow, workerEnded("a1"));
     const { pendingNote } = accepted(state, sessionEnded("ended")).next;
-    // 200 characters of rendered arguments: `{"text":"` and 191 of the text.
-    expect(pendingNote).toContain(`mcp__fixture__slow {"text":"${"x".repeat(191)}…`);
+    // 200 code points of rendered arguments, `{"text":"` and 191 of the text, so no emoji is cut in half.
+    expect(pendingNote).toContain(`mcp__fixture__slow {"text":"${"x".repeat(190)}😀…`);
   });
 });

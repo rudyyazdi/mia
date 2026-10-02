@@ -18,7 +18,6 @@ import {
   type ClientDiagnostics,
   type Decision,
   type Effort,
-  type EventPayload,
   type RuntimeCancellation,
   type TaskStatus,
   type ToolCallPolicy,
@@ -34,6 +33,7 @@ import {
   MAX_UNSETTLED_CALLS,
   resultTarget,
   taskByRuntimeId,
+  type CallState,
   type ConversationState,
   type TaskState,
   type UnsettledCall,
@@ -685,9 +685,6 @@ const EXECUTION_STATUS: Record<TaskStatus, ExecutionStatus> = {
   outcome_unknown: "killed",
 };
 
-/** Each call of an ended task, with the status its end left it in. */
-type EndedCalls = EventPayload<"interruption_outcome">["actions"];
-
 /**
  * End task `task` with `status`. A held call is invalidated and its hook denied. A released call without its result
  * becomes unknown: after a worker agent's end it may still run (capability record W3), so it keeps any exclusive tool
@@ -704,10 +701,10 @@ const endTask = (
     runtimeGone: boolean;
     cancellation: RuntimeCancellation;
   },
-): EndedCalls => {
+): CallState[] => {
   let unknown = false;
   const unsettled: [string, UnsettledCall][] = [];
-  const actions: EndedCalls = [];
+  const left: CallState[] = [];
   for (const call of task.calls.values()) {
     if (call.status === "dispatched") {
       unknown = true;
@@ -727,6 +724,7 @@ const endTask = (
             executionId: task.executionId,
             callId: call.id,
             toolIdentity: call.toolIdentity,
+            redactedArguments: call.redactedArguments,
           },
         ]);
     } else if (call.status === "awaiting_approval" && call.approvalId !== null) {
@@ -744,9 +742,13 @@ const endTask = (
       draft.effect({ kind: "answer_held", approvalId: call.approvalId, decision: STOPPED });
     }
     const now = draft.draft.tasks.get(task.id)?.calls.get(call.id);
-    if (now)
-      actions.push({ tool_call_id: now.id, tool_identity: now.toolIdentity, status: now.status });
+    if (now) left.push(now);
   }
+  const actions = left.map((call) => ({
+    tool_call_id: call.id,
+    tool_identity: call.toolIdentity,
+    status: call.status,
+  }));
   const status = unknown && outcome.status === "completed" ? "outcome_unknown" : outcome.status;
   draft.write(
     { kind: "update_task", id: task.id, fields: { status, finishedAt: draft.at } },
@@ -789,7 +791,24 @@ const endTask = (
     unsettledCalls.delete(runtimeCallId);
   }
   draft.advance({ ...draft.draft, tasks, unsettledCalls });
-  return actions;
+  return left;
+};
+
+/** The longest rendering of one call's arguments a note carries, so a note stays bounded by MAX_CALLS_PER_TASK. */
+const MAX_NOTED_ARGUMENTS = 200;
+
+/**
+ * A call as Mia's notes to the manager agent name it: its tool and its redacted arguments, cut to MAX_NOTED_ARGUMENTS,
+ * so two calls to one tool can be told apart. The arguments are redacted before they are cut, so a cut never exposes
+ * part of a secret.
+ */
+const notedCall = (call: Pick<CallState, "toolIdentity" | "redactedArguments">): string => {
+  // The arguments came from the runtime as JSON, so they render back to it; nothing renders for none at all.
+  const rendered: string | undefined = JSON.stringify(call.redactedArguments);
+  if (rendered === undefined) return call.toolIdentity;
+  const bounded =
+    rendered.length > MAX_NOTED_ARGUMENTS ? `${rendered.slice(0, MAX_NOTED_ARGUMENTS)}…` : rendered;
+  return `${call.toolIdentity} ${bounded}`;
 };
 
 /**
@@ -798,10 +817,11 @@ const endTask = (
  * states Mia's record of each such call, however it came to be without one, and that it overrides the worker agent's
  * account.
  */
-const endNoteOf = (calls: EndedCalls): string | null => {
-  const outcomes = calls.flatMap(({ tool_identity: tool, status }) => {
-    if (status === "invalidated") return [`${tool} did not run`];
-    if (status === "unknown") return [`${tool} has an unknown outcome and may still run`];
+const endNoteOf = (calls: readonly CallState[]): string | null => {
+  const outcomes = calls.flatMap((call) => {
+    if (call.status === "invalidated") return [`${notedCall(call)} did not run`];
+    if (call.status === "unknown")
+      return [`${notedCall(call)} has an unknown outcome and may still run`];
     return [];
   });
   if (outcomes.length === 0) return null;
@@ -1438,18 +1458,16 @@ const noteAfterSession = (input: {
 }): string | null => {
   const unknownCalls = [
     ...input.ended.flatMap((task) =>
-      [...task.calls.values()]
-        .filter((call) => call.status === "dispatched")
-        .map((call) => call.toolIdentity),
+      [...task.calls.values()].filter((call) => call.status === "dispatched").map(notedCall),
     ),
-    ...input.unsettled.map((call) => call.toolIdentity),
+    ...input.unsettled.map(notedCall),
   ];
   if (input.ended.length === 0 && unknownCalls.length === 0 && input.lost === 0) return null;
   const parts = ["[Mia note] Your previous session ended."];
   if (input.ended.length > 0) parts.push(`${input.ended.length} task(s) did not finish.`);
   if (unknownCalls.length > 0)
     parts.push(
-      `These calls were running and their outcome is unknown: ${unknownCalls.join(", ")}. Do not assume they did or did not happen.`,
+      `These calls were running and their outcome is unknown: ${unknownCalls.join("; ")}. Do not assume they did or did not happen.`,
     );
   if (input.lost > 0) parts.push(`${input.lost} message(s) sent to you were never read.`);
   return parts.join(" ");

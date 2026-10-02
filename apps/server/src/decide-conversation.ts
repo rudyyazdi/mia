@@ -794,22 +794,32 @@ const endTask = (
   return left;
 };
 
-/** The longest rendering of one call's arguments a note carries, so a note stays bounded by MAX_CALLS_PER_TASK. */
+/**
+ * The longest rendering of one call's arguments a note names it by. A note names at most every call of the tasks it
+ * covers (MAX_CALLS_PER_TASK each, MAX_RUNNING_TASKS of them, plus MAX_UNSETTLED_CALLS), so this bounds its length.
+ */
 const MAX_NOTED_ARGUMENTS = 200;
+/** The longest rendering of a call's arguments an approval request shows the person deciding it. */
+const MAX_APPROVAL_ARGUMENTS = 500;
 
 /**
- * A call as Mia's notes to the manager agent name it: its tool and its redacted arguments, cut to MAX_NOTED_ARGUMENTS,
- * so two calls to one tool can be told apart. The arguments are redacted before they are cut, so a cut never exposes
+ * A call in one line: its tool and its redacted arguments as JSON (the gate hands them on as `{}` when the runtime
+ * gives none), cut to `maxArguments` code points with a mark, so two calls to one tool can be told apart. Two calls
+ * with the same arguments still read alike. The arguments are redacted before they are cut, so a cut never exposes
  * part of a secret.
  */
-const notedCall = (call: Pick<CallState, "toolIdentity" | "redactedArguments">): string => {
-  // The arguments came from the runtime as JSON, so they render back to it; nothing renders for none at all.
-  const rendered: string | undefined = JSON.stringify(call.redactedArguments);
-  if (rendered === undefined) return call.toolIdentity;
-  const bounded =
-    rendered.length > MAX_NOTED_ARGUMENTS ? `${rendered.slice(0, MAX_NOTED_ARGUMENTS)}…` : rendered;
-  return `${call.toolIdentity} ${bounded}`;
+const callLine = (
+  call: Pick<CallState, "toolIdentity" | "redactedArguments">,
+  maxArguments: number,
+): string => {
+  const rendered = JSON.stringify(call.redactedArguments);
+  const kept = rendered[Symbol.iterator]().take(maxArguments).toArray().join("");
+  return `${call.toolIdentity} ${kept.length < rendered.length ? `${kept}…` : kept}`;
 };
+
+/** A call as Mia's notes to the manager agent name it. */
+const notedCall = (call: Pick<CallState, "toolIdentity" | "redactedArguments">): string =>
+  callLine(call, MAX_NOTED_ARGUMENTS);
 
 /**
  * Mia's note on a worker agent's end, or null when every call it made had its result. A worker agent that ends without
@@ -1171,7 +1181,10 @@ const workerCall = (
             runtime_call_id: event.runtimeCallId,
             binding_revision: 1,
             tool_identity: event.toolIdentity,
-            intended_action: `${event.toolIdentity} ${JSON.stringify(redacted)}`.slice(0, 500),
+            intended_action: callLine(
+              { toolIdentity: event.toolIdentity, redactedArguments: redacted },
+              MAX_APPROVAL_ARGUMENTS,
+            ),
             redacted_arguments: redacted,
             argument_digest: digest,
             explainable: true,

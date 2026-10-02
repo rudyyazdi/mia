@@ -60,6 +60,12 @@ export interface SessionHandle {
    * closed), so the caller records the message as not delivered rather than assuming it was.
    */
   send(text: string, runtimeMessageId: string): boolean;
+  /**
+   * Mia's note on worker agent `runtimeTaskId`'s end, for the manager agent to read with that end's report: what Mia
+   * recorded of the calls the worker agent had no result for, which the worker agent's own account cannot know. The
+   * caller notes an end while it handles that end's `worker_ended`, before the event settles.
+   */
+  noteEnd(runtimeTaskId: string, note: string): void;
   /** Ends input: the runtime finishes what it has and exits. Stopping afterwards still kills it. */
   close(): void;
   /**

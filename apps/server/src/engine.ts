@@ -305,6 +305,10 @@ export class Engine implements CommandEngine {
           this.report(machine, { kind: "message_undelivered", ...this.drawn(), runtimeMessageId }),
         );
       })
+      // A replaced conversation's session is no longer held, so its ends go without a note; no client follows it.
+      .with({ kind: "note_end" }, ({ runtimeTaskId, note }) => {
+        if (this.session?.machine === machine) this.session.handle.noteEnd(runtimeTaskId, note);
+      })
       .with({ kind: "stop_session" }, () => {
         this.session?.handle
           .stop(this.deps.stopDeadline())

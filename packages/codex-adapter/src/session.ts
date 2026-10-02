@@ -104,6 +104,11 @@ class CodexSession {
   /** Delegations the gate allowed whose worker agent has not been reported started. */
   readonly #pendingSpawns = new Set<string>();
   readonly #queue = new TurnQueue();
+  /**
+   * Mia's note on the end being handed over: the caller notes an end while it handles that end's event, so one slot
+   * holds it until the end is queued right after, and the next end clears it.
+   */
+  #endNote: { runtimeTaskId: string; note: string } | null = null;
   readonly #connection: CodexConnection;
   #runtime: RuntimeProcess | null = null;
   #threadId: string | null = null;
@@ -160,6 +165,9 @@ class CodexSession {
         this.#queue.message(text, runtimeMessageId);
         this.#pump();
         return true;
+      },
+      noteEnd: (runtimeTaskId, note) => {
+        this.#endNote = { runtimeTaskId, note };
       },
       close: () => {
         this.#closed = true;
@@ -435,12 +443,15 @@ class CodexSession {
   async #react(event: SessionEvent): Promise<void> {
     if (event.type === "worker_started") this.#pendingSpawns.delete(event.delegationCallId);
     if (event.type === "worker_ended") {
+      const noted = this.#endNote;
+      this.#endNote = null;
       this.#queue.end({
         path: this.#translator.pathOf(event.runtimeTaskId) ?? event.runtimeTaskId,
         threadId: event.runtimeTaskId,
         end: event.end,
         // The event's summary is redacted for the records; the manager agent reads what the worker agent wrote.
         summary: this.#translator.finalTextOf(event.runtimeTaskId),
+        note: noted?.runtimeTaskId === event.runtimeTaskId ? noted.note : null,
       });
       this.#pump();
     }

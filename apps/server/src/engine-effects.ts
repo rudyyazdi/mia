@@ -45,6 +45,8 @@ export interface SessionStart {
  * - `send_message`: hand the session one recorded message under `runtimeMessageId`, the UUID the runtime replays when a
  *   turn takes it. A session that no longer reads input makes the engine record the message undelivered, in a
  *   transition of its own.
+ * - `note_end`: hand the session Mia's note on worker agent `runtimeTaskId`'s end, for the manager agent to read with
+ *   that end's report. Only a worker agent's end queues one, so the session gets it before the end's event settles.
  * - `stop_session`: kill the session's runtime, stopping the manager agent and every worker agent at once; what the
  *   kill causes is recorded when the runtime's exit is.
  * - `answer_gate`: answer the gate request the transition decided, held or at once. Only a gate request's transition
@@ -58,6 +60,7 @@ export type EngineEffect =
   | { kind: "notify_tool_call"; payload: EventPayload<"tool_call"> }
   | { kind: "open_session"; session: SessionStart }
   | { kind: "send_message"; text: string; runtimeMessageId: string }
+  | { kind: "note_end"; runtimeTaskId: string; note: string }
   | { kind: "stop_session" }
   | { kind: "answer_gate"; answer: GateAnswer }
   | { kind: "answer_held"; approvalId: string; decision: GateDecision };

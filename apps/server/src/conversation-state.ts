@@ -74,6 +74,7 @@ export interface UnsettledCall {
   readonly executionId: string;
   readonly callId: string;
   readonly toolIdentity: string;
+  readonly redactedArguments: unknown;
 }
 
 export interface SessionState {

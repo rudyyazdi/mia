@@ -287,7 +287,7 @@ describe("a manager agent that never blocks", () => {
     await client.waitFor("approval_requested");
     await session.endWorker("a1");
     expect(await answer).toMatchObject({ behavior: "deny" });
-    expect(session.endNotes.get("a1")).toContain("mcp__fixture__change did not run");
+    expect(session.endNotes.get("a1")).toContain('mcp__fixture__change {"delta":4} did not run');
   });
 
   it("records a kill whose exit was never seen as unknown, not as confirmed", async () => {

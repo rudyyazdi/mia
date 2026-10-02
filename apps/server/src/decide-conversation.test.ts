@@ -4,6 +4,7 @@ import { readManagerCall, type WorkerEnd } from "@mia/agent-adapter";
 import type { NewId } from "@mia/records";
 import {
   decideConversation,
+  MAX_NOTED_CALLS,
   type ConversationEvent,
   type GateRequestEvent,
 } from "./decide-conversation.ts";
@@ -523,6 +524,23 @@ describe("stops and ends", () => {
     const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
     const ended = accepted(after(running("a1"), done, result("toolu_done")), workerEnded("a1"));
     expect(effectLabels(ended.effects)).not.toContain("note_end");
+  });
+
+  it("names at most a bound of calls in each note and counts the rest", () => {
+    const calls = Array.from({ length: MAX_NOTED_CALLS + 2 }, (_, index) =>
+      gate({ toolIdentity: "mcp__fixture__slow", input: { index } }),
+    );
+    const ended = accepted(after(running("a1"), ...calls), workerEnded("a1"));
+    const endNotes = ended.effects.flatMap((effect) =>
+      effect.kind === "note_end" ? [effect.note] : [],
+    );
+    expect(endNotes).toHaveLength(1);
+    const { pendingNote } = accepted(ended.next, sessionEnded("ended")).next;
+    for (const note of [...endNotes, pendingNote]) {
+      expect(note).toContain(`{"index":${MAX_NOTED_CALLS - 1}}`);
+      expect(note).not.toContain(`{"index":${MAX_NOTED_CALLS}}`);
+      expect(note).toContain("; and 2 more call(s) ");
+    }
   });
 
   it("names an unsettled call in the note after a session by its arguments, cut to a bound", () => {

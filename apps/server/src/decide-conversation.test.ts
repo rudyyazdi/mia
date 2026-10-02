@@ -539,7 +539,7 @@ describe("stops and ends", () => {
     for (const note of [...endNotes, pendingNote]) {
       expect(note).toContain(`{"index":${MAX_NOTED_CALLS - 1}}`);
       expect(note).not.toContain(`{"index":${MAX_NOTED_CALLS}}`);
-      expect(note).toContain("; and 2 more.");
+      expect(note).toContain("; and 2 more call(s) ");
     }
   });
 

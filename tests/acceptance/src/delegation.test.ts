@@ -275,6 +275,21 @@ describe("a manager agent that never blocks", () => {
     expect(turns.at(-1)?.cause).toBe("user_input");
   });
 
+  it("hands the session Mia's note on a worker agent that ended while its call awaited approval", async () => {
+    const session = await turnWithWorker(scripted, { text: "change it", runtimeTaskId: "a1" });
+    await session.endTurn();
+    const answer = session.ask({
+      toolName: "mcp__fixture__change",
+      input: { delta: 4 },
+      toolUseId: "toolu_change",
+      agentId: "a1",
+    });
+    await client.waitFor("approval_requested");
+    await session.endWorker("a1");
+    expect(await answer).toMatchObject({ behavior: "deny" });
+    expect(session.endNotes.get("a1")).toContain("mcp__fixture__change did not run");
+  });
+
   it("records a kill whose exit was never seen as unknown, not as confirmed", async () => {
     const session = await turnWithWorker(scripted, { text: "go", runtimeTaskId: "a1" });
     session.cancellation = "unknown";

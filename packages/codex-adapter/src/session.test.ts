@@ -73,7 +73,15 @@ const open = async (
       .split("\n")
       .filter((line) => line.trim())
       .map((line): unknown => JSON.parse(line));
-  return { handle, events, received };
+  const turnStarts = async () =>
+    (await received()).filter(
+      (line) =>
+        typeof line === "object" &&
+        line !== null &&
+        "method" in line &&
+        line.method === "turn/start",
+    );
+  return { handle, events, turnStarts };
 };
 
 describe("a Codex session", () => {
@@ -87,22 +95,35 @@ describe("a Codex session", () => {
 
   it("reports a worker agent's end to the manager agent as written, and records it redacted", async () => {
     const secret = "Bearer abcdefghijklmnopqrstuvwxyz123456";
-    const { handle, events, received } = await open({ worker: { summary: `done with ${secret}` } });
+    const { handle, events, turnStarts } = await open({
+      worker: { summary: `done with ${secret}` },
+    });
     handle.send("hello", "message-1");
     handle.close();
     expect((await handle.result).status).toBe("ended");
     const ended = events.find((event) => event.type === "worker_ended");
     expect(ended).toMatchObject({ end: "completed", runtimeTaskId: "worker-1" });
     expect(JSON.stringify(ended)).not.toContain(secret);
-    const turns = (await received()).filter(
-      (line) =>
-        typeof line === "object" &&
-        line !== null &&
-        "method" in line &&
-        line.method === "turn/start",
-    );
+    const turns = await turnStarts();
     expect(turns).toHaveLength(2);
     expect(JSON.stringify(turns[1])).toContain(secret);
+  });
+
+  it("reports Mia's note on a worker agent's end ahead of the worker agent's own account", async () => {
+    const note = "[Mia note] mcp__fixture__change did not run.";
+    const { handle, turnStarts } = await open(
+      { worker: { summary: "The change has not returned yet." } },
+      async (event, session) => {
+        if (event.type === "worker_ended") session.noteEnd(event.runtimeTaskId, note);
+      },
+    );
+    handle.send("hello", "message-1");
+    handle.close();
+    expect((await handle.result).status).toBe("ended");
+    const turns = await turnStarts();
+    expect(JSON.stringify(turns[1])).toContain(
+      `ended: completed. ${note} Its final message: The change has not returned yet.`,
+    );
   });
 
   it("ends as it exited when stopped after Codex exited on its own", async () => {

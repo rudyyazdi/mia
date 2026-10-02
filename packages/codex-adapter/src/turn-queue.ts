@@ -7,6 +7,8 @@ export interface EndReport {
   end: WorkerEnd;
   /** The worker agent's final message, unredacted: the manager agent reads it, as it would its own tool result. */
   summary: string | null;
+  /** Mia's note on the end, put before the final message so the manager agent reads Mia's record first; or null. */
+  note: string | null;
 }
 
 /** What one manager agent's turn takes: a user's message, or the worker agents' ends no turn has reported yet. */
@@ -21,8 +23,8 @@ export const MAX_LISTED_ENDS = 64;
 export const reportOf = (ends: readonly EndReport[], unlisted: number): string =>
   [
     ...ends.map(
-      ({ path, threadId, end, summary }) =>
-        `[Mia] Worker agent ${path} (id ${threadId}) ended: ${end}.${summary === null ? "" : ` Its final message: ${summary}`}`,
+      ({ path, threadId, end, summary, note }) =>
+        `[Mia] Worker agent ${path} (id ${threadId}) ended: ${end}.${note === null ? "" : ` ${note}`}${summary === null ? "" : ` Its final message: ${summary}`}`,
     ),
     ...(unlisted === 0
       ? []

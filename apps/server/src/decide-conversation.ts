@@ -18,10 +18,10 @@ import {
   type ClientDiagnostics,
   type Decision,
   type Effort,
+  type EventPayload,
   type RuntimeCancellation,
   type TaskStatus,
   type ToolCallPolicy,
-  type ToolCallStatus,
   type TurnStatus,
 } from "@mia/protocol";
 import type { ExecutionStatus, NewId } from "@mia/records";
@@ -685,12 +685,15 @@ const EXECUTION_STATUS: Record<TaskStatus, ExecutionStatus> = {
   outcome_unknown: "killed",
 };
 
+/** Each call of an ended task, with the status its end left it in. */
+type EndedCalls = EventPayload<"interruption_outcome">["actions"];
+
 /**
  * End task `task` with `status`. A held call is invalidated and its hook denied. A released call without its result
  * becomes unknown: after a worker agent's end it may still run (capability record W3), so it keeps any exclusive tool
  * it holds and waits for its result among the unsettled calls; after the session's end (`runtimeGone`) no result can
  * come, so its lease is released. An unknown call turns a clean end into outcome_unknown. The client is told with
- * interruption_outcome when the task was stopped, and task_finished otherwise.
+ * interruption_outcome when the task was stopped, and task_finished otherwise. Returns the task's calls as it left them.
  */
 const endTask = (
   draft: ConversationDraft,
@@ -701,10 +704,10 @@ const endTask = (
     runtimeGone: boolean;
     cancellation: RuntimeCancellation;
   },
-): void => {
+): EndedCalls => {
   let unknown = false;
   const unsettled: [string, UnsettledCall][] = [];
-  const actions: { tool_call_id: string; tool_identity: string; status: ToolCallStatus }[] = [];
+  const actions: EndedCalls = [];
   for (const call of task.calls.values()) {
     if (call.status === "dispatched") {
       unknown = true;
@@ -786,9 +789,26 @@ const endTask = (
     unsettledCalls.delete(runtimeCallId);
   }
   draft.advance({ ...draft.draft, tasks, unsettledCalls });
+  return actions;
 };
 
-/** The runtime reports a worker agent's end: its task ends, and a coming turn reports it. */
+/**
+ * Mia's note on a worker agent's end, or null when every call it made had its result. A worker agent that ends without
+ * a call's result can only guess at it (it may say a call it was never let make "has not returned yet"), so the note
+ * states Mia's record of each such call, however it came to be without one, and that it overrides the worker agent's
+ * account.
+ */
+const endNoteOf = (calls: EndedCalls): string | null => {
+  const outcomes = calls.flatMap(({ tool_identity: tool, status }) => {
+    if (status === "invalidated") return [`${tool} did not run`];
+    if (status === "unknown") return [`${tool} has an unknown outcome and may still run`];
+    return [];
+  });
+  if (outcomes.length === 0) return null;
+  return `[Mia note] Mia's record of the calls this worker agent had no result for, which overrides anything it says about them: ${outcomes.join("; ")}.`;
+};
+
+/** The runtime reports a worker agent's end: its task ends, a coming turn reports it, and Mia notes what its calls came to. */
 const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Date): Decided => {
   const task = taskByRuntimeId(state, event.runtimeTaskId);
   if (!task) return rejected({ kind: "no_task" });
@@ -803,12 +823,14 @@ const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Dat
     },
     { ...workerLinks(task), id: draft.id("evt") },
   );
-  endTask(draft, task, {
+  const calls = endTask(draft, task, {
     status: endedStatus(event.end, !task.gateOpen),
     stopped: !task.gateOpen,
     runtimeGone: false,
     cancellation: "not_needed",
   });
+  const note = endNoteOf(calls);
+  if (note !== null) draft.effect({ kind: "note_end", runtimeTaskId: event.runtimeTaskId, note });
   // Bounded: a turn that reports task ends reports all of them, so only ends no turn has come for yet pile up.
   const endedTasks = [...draft.draft.endedTasks, task.id].slice(-MAX_RUNNING_TASKS);
   draft.advance({ ...draft.draft, endedTasks });

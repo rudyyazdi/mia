@@ -484,4 +484,37 @@ describe("stops and ends", () => {
     );
     expect(finished).toMatchObject({ fields: { status: "outcome_unknown" } });
   });
+
+  it("notes for the manager agent what a worker agent's end settled, which the worker agent cannot know", () => {
+    const held = gate({ policy: "ask", toolIdentity: "mcp__fixture__change" });
+    const released = gate({ policy: "allow", toolIdentity: "mcp__fixture__slow" });
+    const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
+    const state = after(running("a1"), held, released, done, result("toolu_done"));
+    const notes = accepted(state, workerEnded("a1")).effects.flatMap((effect) =>
+      effect.kind === "note_end" ? [effect] : [],
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ runtimeTaskId: "a1" });
+    expect(notes[0]?.note).toContain("mcp__fixture__change did not run");
+    expect(notes[0]?.note).toContain("mcp__fixture__slow has an unknown outcome");
+    expect(notes[0]?.note).not.toContain("mcp__fixture__read");
+  });
+
+  it("notes a call a stop invalidated before its worker agent ended", () => {
+    const held = gate({ policy: "ask", toolIdentity: "mcp__fixture__change" });
+    const stopped = after(running("a1"), held, { kind: "stop_all", ...drawn, by: "client" });
+    const ended = accepted(stopped, workerEnded("a1", "stopped"));
+    expect(ended.effects).toContainEqual(
+      expect.objectContaining({
+        kind: "note_end",
+        note: expect.stringContaining("mcp__fixture__change did not run"),
+      }),
+    );
+  });
+
+  it("notes nothing for a worker agent whose calls all had their result", () => {
+    const done = gate({ policy: "allow", runtimeCallId: "toolu_done" });
+    const ended = accepted(after(running("a1"), done, result("toolu_done")), workerEnded("a1"));
+    expect(effectLabels(ended.effects)).not.toContain("note_end");
+  });
 });

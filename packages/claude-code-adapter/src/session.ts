@@ -123,6 +123,9 @@ export class ClaudeCodeSessions implements SessionRunner {
         queued.push({ text, runtimeMessageId });
         return true;
       },
+      // Claude Code reports a subagent's end to the manager agent itself, so there is no report to add the note to
+      // (#218).
+      noteEnd: () => undefined,
       close: () => {
         closed = true;
         running?.close();

@@ -19,6 +19,8 @@ const at = () => new Date().toISOString();
 /** One scripted session: the messages the engine sent it, and the controls the test drives it with. */
 export class ScriptedSession {
   readonly messages: { text: string; runtimeMessageId: string }[] = [];
+  /** Mia's notes on worker agents' ends, by runtime task id. */
+  readonly endNotes = new Map<string, string>();
   readonly handle: SessionHandle;
   private readonly ended = Promise.withResolvers<SessionResult>();
   private readonly messageWaiters: (() => void)[] = [];
@@ -54,6 +56,9 @@ export class ScriptedSession {
         this.messages.push({ text, runtimeMessageId });
         for (const wake of this.messageWaiters.splice(0)) wake();
         return true;
+      },
+      noteEnd: (runtimeTaskId, note) => {
+        this.endNotes.set(runtimeTaskId, note);
       },
       close: () => {
         this.open = false;

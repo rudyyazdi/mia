@@ -6,6 +6,7 @@ const ended = (threadId: string): EndReport => ({
   threadId,
   end: "completed",
   summary: null,
+  note: null,
 });
 
 describe("TurnQueue", () => {

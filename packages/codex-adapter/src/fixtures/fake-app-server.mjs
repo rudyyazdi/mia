@@ -16,6 +16,20 @@ const item = (threadId, value) => {
 
 /** One manager turn: it takes the message, and on the first turn a worker agent starts and ends inside it. */
 const playTurn = (threadId, turn, params) => {
+  if (plan.secondWorker && turn === "turn-2") {
+    item("worker-2", { type: "agentMessage", id: "second-msg", text: "second result" });
+    notify("turn/completed", {
+      threadId: "worker-2",
+      turn: { id: "second-turn", status: "completed", items: [] },
+    });
+    item(threadId, {
+      type: "subAgentActivity",
+      id: "second-end",
+      kind: "completed",
+      agentThreadId: "worker-2",
+      agentPath: "/root/second",
+    });
+  }
   notify("turn/started", { threadId, turn: { id: turn } });
   item(threadId, {
     type: "userMessage",
@@ -32,6 +46,16 @@ const playTurn = (threadId, turn, params) => {
       turn: { id: "worker-turn", status: "completed", items: [] },
     });
     item(threadId, { type: "subAgentActivity", id: "call_done", kind: "completed", ...agent });
+  }
+  if (plan.secondWorker && turn === "turn-1") {
+    item(threadId, {
+      type: "subAgentActivity",
+      id: "second-start",
+      kind: "started",
+      agentThreadId: "worker-2",
+      agentPath: "/root/second",
+    });
+    notify("turn/started", { threadId: "worker-2", turn: { id: "second-turn" } });
   }
   notify("turn/completed", { threadId, turn: { id: turn, status: "completed", items: [] } });
 };

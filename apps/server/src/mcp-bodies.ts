@@ -1,5 +1,5 @@
 import { match } from "ts-pattern";
-import type { RuntimeFileRead } from "@mia/agent-adapter";
+import type { RuntimeFileRead, RuntimeKind } from "@mia/agent-adapter";
 import { bodyLogLinesFor, type BodyDirection } from "@mia/mcp-http";
 import { redactValue } from "@mia/protocol";
 import type { McpContent, McpEventType } from "@mia/records";
@@ -48,11 +48,11 @@ const DIRECTIONS: readonly BodyDirection[] = ["request", "response"];
 export const unrecordedBodies = (reason: string): McpBody[] =>
   DIRECTIONS.map((direction) => ({ direction, status: "unrecorded", reason }));
 
-/** What a call with tool-use id `toolUseId` records from its server's body log, read as `read` at `readAt`. */
+/** What a runtime call records from its server's body log, without guessing unsupported runtime correlation. */
 export const mcpBodiesFrom = (
   read: RuntimeFileRead,
   toolUseId: string,
-  readAt: BodyReadPoint,
+  context: { readAt: BodyReadPoint; runtime: RuntimeKind },
 ): McpBody[] =>
   match(read)
     .with({ status: "absent" }, () => unrecordedBodies("the body log does not exist"))
@@ -60,6 +60,12 @@ export const mcpBodiesFrom = (
       unrecordedBodies(`the body log is unreadable: ${reason}`),
     )
     .with({ status: "read" }, ({ bytes }) => {
+      // Codex does not send the Claude tool-use metadata. Transport exchanges are retained by the fixture but
+      // cannot be attributed to this call; never infer a match from similar arguments or nearby timestamps.
+      if (context.runtime === "codex")
+        return unrecordedBodies(
+          "Codex does not supply a correlatable tool-use id; MCP exchanges remain in the body log without call attribution",
+        );
       const lines = bodyLogLinesFor(bytes.toString("utf8"), toolUseId);
       const recorded = lines.map((line): McpBody => ({
         direction: line.direction,
@@ -71,7 +77,7 @@ export const mcpBodiesFrom = (
       ).map((direction): McpBody => ({
         direction,
         status: "unrecorded",
-        reason: missingReason(direction, readAt),
+        reason: missingReason(direction, context.readAt),
       }));
       return [...recorded, ...missing];
     })

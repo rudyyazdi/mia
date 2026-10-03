@@ -12,12 +12,15 @@ export const TOOL_USE_ID_META = "claudecode/toolUseId";
 export const BodyDirectionSchema = z.enum(["request", "response"]);
 export type BodyDirection = z.infer<typeof BodyDirectionSchema>;
 
-/** One line of a body log: one JSON-RPC message of a `tools/call` exchange, keyed by the call's tool-use id. */
-export const BodyLogLineSchema = z.object({
-  tool_use_id: z.string(),
-  direction: BodyDirectionSchema,
-  body: z.unknown(),
-});
+/**
+ * One message of a tools/call exchange. New logs pair messages by exchange_id even when the runtime supplies no
+ * tool-use id. Correlated lines from older logs remain readable; uncorrelated lines require an exchange id.
+ */
+const BodyMessageSchema = z.object({ direction: BodyDirectionSchema, body: z.unknown() });
+export const BodyLogLineSchema = z.union([
+  BodyMessageSchema.extend({ tool_use_id: z.string(), exchange_id: z.string().optional() }),
+  BodyMessageSchema.extend({ tool_use_id: z.null(), exchange_id: z.string() }),
+]);
 export type BodyLogLine = z.infer<typeof BodyLogLineSchema>;
 
 /** A JSON-RPC id: what pairs a response with its request inside one HTTP exchange. */
@@ -26,20 +29,22 @@ type RpcId = string | number;
 const ToolCallRequestSchema = z.object({
   id: z.union([z.string(), z.number()]),
   method: z.literal("tools/call"),
-  params: z.object({ _meta: z.object({ [TOOL_USE_ID_META]: z.string() }) }),
+  params: z.object({ name: z.string(), _meta: z.unknown().optional() }),
 });
 
-/**
- * The `tools/call` requests in one HTTP request body (a single message or a batch), each with its tool-use id,
- * by JSON-RPC id. A call without a tool-use id cannot be matched to a recorded call, so it is left out.
- */
-export const toolCallsIn = (body: unknown): Map<RpcId, { toolUseId: string; body: unknown }> => {
-  const calls = new Map<RpcId, { toolUseId: string; body: unknown }>();
+const ToolUseMetaSchema = z.object({ [TOOL_USE_ID_META]: z.string() });
+
+/** All tools/call requests by JSON-RPC id within this HTTP exchange; absent runtime correlation stays null. */
+export const toolCallsIn = (
+  body: unknown,
+): Map<RpcId, { toolUseId: string | null; body: unknown }> => {
+  const calls = new Map<RpcId, { toolUseId: string | null; body: unknown }>();
   for (const message of Array.isArray(body) ? body : [body]) {
     const call = ToolCallRequestSchema.safeParse(message);
     if (call.success)
       calls.set(call.data.id, {
-        toolUseId: call.data.params._meta[TOOL_USE_ID_META],
+        toolUseId:
+          ToolUseMetaSchema.safeParse(call.data.params._meta).data?.[TOOL_USE_ID_META] ?? null,
         body: message,
       });
   }

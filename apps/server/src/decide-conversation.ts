@@ -103,6 +103,8 @@ export interface MessageUndeliveredEvent extends Drawn {
 export interface TurnBeganEvent extends Drawn {
   kind: "turn_began";
   init: RuntimeInit;
+  /** The adapter's exact result batch, resolved to committed Mia task ids at the persistence boundary. */
+  reportedTaskIds?: readonly string[];
 }
 
 export interface InputTakenEvent extends Drawn {
@@ -400,6 +402,7 @@ const messageUndelivered = (
 /** The runtime began a manager turn (a fresh init, capability record W4); its cause shows with what comes next. */
 const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): Decided => {
   if (state.session === null) return rejected({ kind: "no_session" });
+  if (event.reportedTaskIds?.length === 0) return rejected({ kind: "no_task" });
   const draft = draftFor(state, event, now);
   if (state.turn !== null)
     finishTurn(draft, { status: "failed", error: "no result before the next turn" });
@@ -407,23 +410,29 @@ const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): 
     ...draft.draft,
     openingTurn: { initEvidence: event.init.evidence, model: event.init.model },
   });
+  if (event.reportedTaskIds !== undefined)
+    openTurn(draft, { kind: "activity", reportedTaskIds: event.reportedTaskIds });
   return draft.accepted();
 };
 
 /**
  * Record the turn the runtime began, now that its cause shows: a message the runtime replayed makes it the user's;
- * anything else first makes it the report of every task end no turn reported yet. No turn opening: nothing to do.
+ * an adapter-supplied batch names exactly the ends being reported. Runtimes that schedule their own turns fall
+ * back to the unreported ends at first activity. No turn opening: nothing to do.
  */
 const openTurn = (
   draft: ConversationDraft,
-  cause: { kind: "message"; eventId: string } | { kind: "activity" },
+  cause:
+    | { kind: "message"; eventId: string }
+    | { kind: "activity"; reportedTaskIds?: readonly string[] },
 ): void => {
   const state = draft.draft;
   const { openingTurn, session } = state;
   if (state.turn !== null || openingTurn === null || session === null) return;
   const turnId = draft.id("turn");
-  const [firstEnded] = state.endedTasks;
-  const reported = cause.kind === "activity" ? (firstEnded ?? null) : null;
+  const reportedTasks =
+    cause.kind === "activity" ? (cause.reportedTaskIds ?? state.endedTasks) : [];
+  const reported = reportedTasks[0] ?? null;
   draft.write({
     kind: "create_turn",
     input: {
@@ -463,14 +472,14 @@ const openTurn = (
   if (reported !== null)
     draft.record(
       "turn_reports_tasks",
-      { turn_id: turnId, task_ids: state.endedTasks },
+      { turn_id: turnId, task_ids: reportedTasks },
       { id: draft.id("evt"), executionId: session.executionId },
     );
   draft.advance({
     ...draft.draft,
     sessionStarted: true,
     openingTurn: null,
-    endedTasks: reported === null ? state.endedTasks : [],
+    endedTasks: state.endedTasks.filter((taskId) => !reportedTasks.includes(taskId)),
     turn: {
       id: turnId,
       cause: reported === null ? "user_input" : "task_end",
@@ -873,7 +882,7 @@ const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Dat
   });
   const note = endNoteOf(calls);
   if (note !== null) draft.effect({ kind: "note_end", runtimeTaskId: event.runtimeTaskId, note });
-  // Bounded: a turn that reports task ends reports all of them, so only ends no turn has come for yet pile up.
+  // Legacy inference is bounded; adapters with explicit batches resolve older ends from committed task rows.
   const endedTasks = [...draft.draft.endedTasks, task.id].slice(-MAX_RUNNING_TASKS);
   draft.advance({ ...draft.draft, endedTasks });
   return draft.accepted();

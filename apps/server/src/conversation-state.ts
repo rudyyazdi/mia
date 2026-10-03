@@ -34,8 +34,8 @@ export interface ConversationState {
    */
   readonly queuedInputs: readonly QueuedInput[];
   /**
-   * The tasks whose end no turn has reported yet, oldest first (MAX_RUNNING_TASKS: a turn that reports task ends
-   * reports all of them, and an end beyond the bound drops the oldest unreported one).
+   * The recent tasks whose end no turn has reported yet, oldest first (MAX_RUNNING_TASKS; overflow drops the
+   * oldest). Used when a runtime does not identify its report batch; explicit batches resolve committed tasks.
    */
   readonly endedTasks: readonly string[];
   /**

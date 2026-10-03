@@ -34,8 +34,9 @@ export const reportOf = (ends: readonly EndReport[], unlisted: number): string =
 /**
  * The manager agent's next turns. Codex takes one turn at a time and starts none of its own when a worker agent
  * ends, so ends wait here for a turn that reports them. The next turn reports every end waiting, before any message
- * waiting, because Mia records a turn that takes no message as reporting every end not yet reported. Messages are
- * bounded by the caller's own message bound; ends are listed up to MAX_LISTED_ENDS and counted past it.
+ * waiting. The session reports the selected batch's task ids when its turn begins; ends arriving after take()
+ * belong to a later turn. Messages are bounded by the caller's own message bound; ends are listed up to
+ * MAX_LISTED_ENDS and counted past it.
  */
 export class TurnQueue {
   readonly #messages: { text: string; runtimeMessageId: string }[] = [];

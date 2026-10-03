@@ -41,6 +41,44 @@ const rows = <Row>(sql: string, ...params: string[]): Row[] => {
 const conversationId = (): string => must(client.conversationId, "conversation id");
 
 describe("a manager agent that never blocks", () => {
+  it("attributes successive Codex result batches independently when another worker ends before turn init", async () => {
+    const session = await turnWithWorker(scripted, { text: "read twice", runtimeTaskId: "first" });
+    await session.delegate("second");
+    await session.endTurn();
+    await session.endWorker("first");
+    // Codex has already selected the first result batch when this second end arrives.
+    await session.endWorker("second");
+    const tasks = rows<TaskRow>(
+      "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY rowid",
+      conversationId(),
+    );
+    for (const runtimeTaskId of ["first", "second"]) {
+      await session.emit({
+        type: "runtime_init",
+        init: { model: "scripted-model", evidence: {}, reportedRuntimeTaskIds: [runtimeTaskId] },
+        at: "2026-10-03T00:00:00.000Z",
+      });
+      await session.reply(`Result for ${runtimeTaskId}`);
+      await session.endTurn();
+    }
+    const turns = rows<TurnRow>(
+      "SELECT * FROM turns WHERE conversation_id = ? ORDER BY rowid",
+      conversationId(),
+    );
+    expect(turns.map((turn) => [turn.cause, turn.caused_by_task_id])).toEqual([
+      ["user_input", null],
+      ["task_end", tasks[0]?.id],
+      ["task_end", tasks[1]?.id],
+    ]);
+    const reports = rows<{ payload: string }>(
+      "SELECT payload FROM events WHERE conversation_id = ? AND type = 'turn_reports_tasks' ORDER BY sequence",
+      conversationId(),
+    );
+    expect(reports.map((report): unknown => JSON.parse(report.payload))).toEqual([
+      { turn_id: turns[1]?.id, task_ids: [tasks[0]?.id] },
+      { turn_id: turns[2]?.id, task_ids: [tasks[1]?.id] },
+    ]);
+  });
   it("runs the plan's acceptance journey and records it", async () => {
     await restart({
       exclusiveTools: [EXCLUSIVE],

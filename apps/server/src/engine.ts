@@ -444,7 +444,10 @@ export class Engine implements CommandEngine {
     const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
     const read = await this.deps.readEvidence(path, { signal, maxBytes: MAX_BODY_LOG_BYTES });
     try {
-      return mcpBodiesFrom(read, runtimeCallId, readAt);
+      return mcpBodiesFrom(read, runtimeCallId, {
+        readAt,
+        runtime: this.deps.profile.runtime.kind,
+      });
     } catch (error) {
       return unrecordedBodies(`the body log could not be parsed: ${errorMessage(error)}`);
     }
@@ -487,7 +490,15 @@ export class Engine implements CommandEngine {
     const drawn = this.drawn();
     await match(event)
       .with({ type: "runtime_init" }, ({ init }) => {
-        this.report(machine, { ...drawn, kind: "turn_began", init });
+        const reportedTaskIds = init.reportedRuntimeTaskIds?.flatMap((runtimeTaskId) => {
+          const task = this.deps.catalog.get<{ id: string }>(
+            "SELECT id FROM tasks WHERE conversation_id = ? AND runtime_task_id = ?",
+            machine.state?.id ?? "",
+            runtimeTaskId,
+          );
+          return task === undefined ? [] : [task.id];
+        });
+        this.report(machine, { ...drawn, kind: "turn_began", init, reportedTaskIds });
       })
       .with({ type: "input_taken" }, ({ runtimeMessageId }) => {
         this.report(machine, { ...drawn, kind: "input_taken", runtimeMessageId });

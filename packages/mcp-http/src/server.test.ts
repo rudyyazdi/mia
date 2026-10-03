@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { TOOL_USE_ID_META } from "./body-log.ts";
+import { BodyLogLineSchema, TOOL_USE_ID_META } from "./body-log.ts";
 import { readLogEntries } from "./log-fixture.ts";
 import {
   McpServer,
@@ -376,28 +376,47 @@ describe("MCP HTTP server body log", () => {
 
     // Read before closing the server: the lines are written before the response goes out, not only by close.
     expect(await readLogEntries(bodyLogFile)).toEqual([
-      { tool_use_id: "toolu_echo", direction: "request", body: request },
       {
         tool_use_id: "toolu_echo",
+        exchange_id: expect.any(String),
+        direction: "request",
+        body: request,
+      },
+      {
+        tool_use_id: "toolu_echo",
+        exchange_id: expect.any(String),
         direction: "response",
         body: { jsonrpc: "2.0", id: 7, result: { content: [{ type: "text", text: "call 7" }] } },
       },
     ]);
   });
 
-  it("logs only tool calls that carry a tool-use id", async () => {
+  it("pairs uncorrelated exchanges independently when concurrent clients reuse a JSON-RPC id", async () => {
     const bodyLogFile = join(dir, "bodies.jsonl");
     const server = await startEchoServer({ bodyLogFile });
-
-    for (const body of [initializeRequest(), echoCall(8, undefined), echoCall(9, { other: "x" })]) {
-      const response = await post(server.url, body);
-      expect(response.status).toBe(200);
-      await response.text();
+    await (await initialize(server.url)).text();
+    await Promise.all(
+      [undefined, { other: "metadata" }].map(async (meta) => {
+        const response = await post(server.url, echoCall(8, meta));
+        expect(await response.text()).toContain("call 8");
+      }),
+    );
+    const lines = (await readLogEntries(bodyLogFile)).map((line) => BodyLogLineSchema.parse(line));
+    expect(lines).toHaveLength(4);
+    const requests = lines.filter((line) => line.direction === "request");
+    expect(new Set(requests.map((line) => line.exchange_id)).size).toBe(2);
+    for (const request of requests) {
+      expect(request).toMatchObject({ tool_use_id: null, exchange_id: expect.any(String) });
+      expect(lines.filter((line) => line.exchange_id === request.exchange_id)).toEqual([
+        request,
+        {
+          tool_use_id: null,
+          exchange_id: request.exchange_id,
+          direction: "response",
+          body: { jsonrpc: "2.0", id: 8, result: { content: [{ type: "text", text: "call 8" }] } },
+        },
+      ]);
     }
-    await server.close();
-    handle = undefined;
-
-    await expect(readLogEntries(bodyLogFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps answering tool calls when its body log cannot be written", async () => {

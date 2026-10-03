@@ -55,7 +55,8 @@ Copy `examples/config/production-opus.example.json` (Claude Code) or `examples/c
 ## Runtime differences
 
 Claude Code schedules its own worker-result turns, so Mia infers their task attribution from pending results.
-Mia schedules Codex turns and supplies the exact result batch, including an empty batch for user messages.
+Mia schedules Codex turns and supplies the exact result batch, including an empty batch for user messages; a
+worker result that arrives while a Codex turn runs is steered into that turn and joins its batch once answered.
 Shared MCP logging preserves Claude's tool-use ID correlation and records Codex exchanges without per-call
 attribution. This requires no additional scheduling or correlation logic in the Claude Code adapter.
 

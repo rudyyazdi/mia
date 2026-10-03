@@ -69,6 +69,8 @@ const lastAgentText = (items: readonly unknown[]): string | undefined =>
  */
 export class CodexTranslator {
   #manager: { threadId: string; model: string } | null = null;
+  /** The manager agent's running turn, from its turn/started to its turn/completed; null between turns. */
+  #managerTurnId: string | null = null;
   /** By thread id, oldest first; bounded by MAX_REMEMBERED_WORKERS. */
   readonly #workers = new Map<string, Worker>();
   /** The manager agent's latest token accounting, which its turn's summary reports. */
@@ -81,6 +83,10 @@ export class CodexTranslator {
 
   get managerThreadId(): string | null {
     return this.#manager?.threadId ?? null;
+  }
+
+  get managerTurnId(): string | null {
+    return this.#managerTurnId;
   }
 
   /** Worker agents started and not yet ended. */
@@ -181,6 +187,7 @@ export class CodexTranslator {
     if (worker) worker.turnStatus = null;
     const manager = this.#manager;
     if (!manager || parsed.data.threadId !== manager.threadId) return [];
+    this.#managerTurnId = parsed.data.turn.id;
     this.#usage = undefined;
     return [{ type: "runtime_init", init: { model: manager.model, evidence: params }, at: now() }];
   }
@@ -198,6 +205,7 @@ export class CodexTranslator {
         : [];
     }
     if (threadId !== this.managerThreadId) return [];
+    this.#managerTurnId = null;
     const summary: TurnSummary = {
       isError: turn.status === "failed",
       outcome: turn.status,

@@ -11,7 +11,7 @@ import {
   type Scripted,
   type TestServer,
 } from "./harness.ts";
-import type { ScriptedSessions } from "./scripted-session.ts";
+import type { ScriptedSession, ScriptedSessions } from "./scripted-session.ts";
 
 // The manager agent's user acceptance journey, against the real server, gateway, records and client,
 // with only the runtime scripted: two independent requests, one needing approval, and a long-running background
@@ -40,43 +40,85 @@ const rows = <Row>(sql: string, ...params: string[]): Row[] => {
 
 const conversationId = (): string => must(client.conversationId, "conversation id");
 
-describe("a manager agent that never blocks", () => {
-  it("attributes successive Codex result batches independently when another worker ends before turn init", async () => {
-    const session = await turnWithWorker(scripted, { text: "read twice", runtimeTaskId: "first" });
-    await session.delegate("second");
-    await session.endTurn();
-    await session.endWorker("first");
-    // Codex has already selected the first result batch when this second end arrives.
-    await session.endWorker("second");
-    const tasks = rows<TaskRow>(
+/** The conversation's tasks, its turns' causes, and its recorded result batches, in the order they were recorded. */
+const recordedBatches = () => {
+  const turns = rows<TurnRow>(
+    "SELECT * FROM turns WHERE conversation_id = ? ORDER BY rowid",
+    conversationId(),
+  );
+  return {
+    tasks: rows<TaskRow>(
       "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY rowid",
       conversationId(),
-    );
+    ).map((task) => task.id),
+    turns: turns.map((turn) => turn.id),
+    causes: turns.map((turn) => [turn.cause, turn.caused_by_task_id]),
+    reports: rows<{ payload: string }>(
+      "SELECT payload FROM events WHERE conversation_id = ? AND type = 'turn_reports_tasks' ORDER BY sequence",
+      conversationId(),
+    ).map((report): unknown => JSON.parse(report.payload)),
+  };
+};
+
+/** A turn that delegated to workers `first` and `second` and ended, after which `first` ended. */
+const firstOfTwoEnded = async (): Promise<ScriptedSession> => {
+  const session = await turnWithWorker(scripted, { text: "read twice", runtimeTaskId: "first" });
+  await session.delegate("second");
+  await session.endTurn();
+  await session.endWorker("first");
+  return session;
+};
+
+/** Codex begins a turn that reports the end of `runtimeTaskId`. */
+const beginReport = (session: ScriptedSession, runtimeTaskId: string): Promise<void> =>
+  session.emit({
+    type: "runtime_init",
+    init: { model: "scripted-model", evidence: {}, reportedRuntimeTaskIds: [runtimeTaskId] },
+    at: "2026-10-03T00:00:00.000Z",
+  });
+
+describe("a manager agent that never blocks", () => {
+  it("attributes successive Codex result batches independently when another worker ends before turn init", async () => {
+    const session = await firstOfTwoEnded();
+    // Codex has already selected the first result batch when this second end arrives.
+    await session.endWorker("second");
     for (const runtimeTaskId of ["first", "second"]) {
-      await session.emit({
-        type: "runtime_init",
-        init: { model: "scripted-model", evidence: {}, reportedRuntimeTaskIds: [runtimeTaskId] },
-        at: "2026-10-03T00:00:00.000Z",
-      });
+      await beginReport(session, runtimeTaskId);
       await session.reply(`Result for ${runtimeTaskId}`);
       await session.endTurn();
     }
-    const turns = rows<TurnRow>(
-      "SELECT * FROM turns WHERE conversation_id = ? ORDER BY rowid",
-      conversationId(),
-    );
-    expect(turns.map((turn) => [turn.cause, turn.caused_by_task_id])).toEqual([
+    const { tasks, turns, causes, reports } = recordedBatches();
+    expect(causes).toEqual([
       ["user_input", null],
-      ["task_end", tasks[0]?.id],
-      ["task_end", tasks[1]?.id],
+      ["task_end", tasks[0]],
+      ["task_end", tasks[1]],
     ]);
-    const reports = rows<{ payload: string }>(
-      "SELECT payload FROM events WHERE conversation_id = ? AND type = 'turn_reports_tasks' ORDER BY sequence",
-      conversationId(),
-    );
-    expect(reports.map((report): unknown => JSON.parse(report.payload))).toEqual([
-      { turn_id: turns[1]?.id, task_ids: [tasks[0]?.id] },
-      { turn_id: turns[2]?.id, task_ids: [tasks[1]?.id] },
+    expect(reports).toEqual([
+      { turn_id: turns[1], task_ids: [tasks[0]] },
+      { turn_id: turns[2], task_ids: [tasks[1]] },
+    ]);
+  });
+  it("adds a worker's end the running turn reported after it began to that turn's batch", async () => {
+    const session = await firstOfTwoEnded();
+    await beginReport(session, "first");
+    await session.reply("Result for first");
+    // Codex steered this end into the running turn, which answered it.
+    await session.endWorker("second");
+    await session.emit({
+      type: "turn_reported_ends",
+      runtimeTaskIds: ["second"],
+      at: "2026-10-03T00:00:01.000Z",
+    });
+    await session.reply("Result for second");
+    await session.endTurn();
+    const { tasks, turns, causes, reports } = recordedBatches();
+    expect(causes).toEqual([
+      ["user_input", null],
+      ["task_end", tasks[0]],
+    ]);
+    expect(reports).toEqual([
+      { turn_id: turns[1], task_ids: [tasks[0]] },
+      { turn_id: turns[1], task_ids: [tasks[1]] },
     ]);
   });
   it("runs the plan's acceptance journey and records it", async () => {

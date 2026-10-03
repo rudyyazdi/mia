@@ -14,6 +14,35 @@ const item = (threadId, value) => {
   notify("item/completed", { threadId, item: value });
 };
 
+/** The manager agent writes reply text, as a turn that read its input does. */
+const reply = (threadId, text) => notify("item/agentMessage/delta", { threadId, delta: text });
+
+/**
+ * With FAKE_PLAN.steer, the first turn stays open after its worker agent ends, until Mia steers that end into it; the
+ * plan says how the turn takes the steer: `answer` replies after recording it, `late` records it after its last reply
+ * (Codex's race at the end of a turn), and `refuse` refuses it.
+ */
+let openTurn = null;
+const takeSteer = (message) => {
+  const { threadId, turn } = openTurn;
+  openTurn = null;
+  const steered = {
+    type: "userMessage",
+    id: "steer-in",
+    clientId: message.params.clientUserMessageId,
+  };
+  if (plan.steer === "refuse") {
+    send({ id: message.id, error: { code: -32000, message: "no active turn" } });
+    reply(threadId, "Started the work.");
+  } else {
+    send({ id: message.id, result: { turnId: turn } });
+    if (plan.steer === "late") reply(threadId, "Started the work.");
+    item(threadId, steered);
+    if (plan.steer === "answer") reply(threadId, "The work is done.");
+  }
+  notify("turn/completed", { threadId, turn: { id: turn, status: "completed", items: [] } });
+};
+
 /** One manager turn: it takes the message, and on the first turn a worker agent starts and ends inside it. */
 const playTurn = (threadId, turn, params) => {
   if (plan.secondWorker && turn === "turn-2") {
@@ -46,6 +75,10 @@ const playTurn = (threadId, turn, params) => {
       turn: { id: "worker-turn", status: "completed", items: [] },
     });
     item(threadId, { type: "subAgentActivity", id: "call_done", kind: "completed", ...agent });
+    if (plan.steer) {
+      openTurn = { threadId, turn };
+      return;
+    }
   }
   if (plan.secondWorker && turn === "turn-1") {
     item(threadId, {
@@ -75,6 +108,10 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, `${line}\n`);
   const message = JSON.parse(line);
   if (message.id === undefined) continue;
+  if (message.method === "turn/steer" && openTurn) {
+    takeSteer(message);
+    continue;
+  }
   if (message.method === "turn/start") {
     if (plan.turnStart === "reject") {
       send({ id: message.id, error: { code: -32000, message: "busy" } });

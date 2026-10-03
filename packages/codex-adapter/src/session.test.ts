@@ -85,6 +85,40 @@ const open = async (
 };
 
 describe("a Codex session", () => {
+  it("steers a worker agent's end into the running turn, which then reports it, instead of starting another turn", async () => {
+    const { handle, events, turnStarts } = await open({
+      worker: { summary: "first result" },
+      steer: "answer",
+    });
+    handle.send("hello", "message-1");
+    handle.close();
+    expect((await handle.result).status).toBe("ended");
+    expect(await turnStarts()).toHaveLength(1);
+    expect(events.filter((event) => event.type === "turn_reported_ends")).toMatchObject([
+      { runtimeTaskIds: ["worker-1"] },
+    ]);
+    expect(events.filter((event) => event.type === "input_taken")).toMatchObject([
+      { runtimeMessageId: "message-1" },
+    ]);
+  });
+
+  it.each(["late", "refuse"])(
+    "reports a steered end in a turn of its own when the running turn did not answer it (%s)",
+    async (steer) => {
+      const { handle, events, turnStarts } = await open({
+        worker: { summary: "first result" },
+        steer,
+      });
+      handle.send("hello", "message-1");
+      handle.close();
+      expect((await handle.result).status).toBe("ended");
+      const turns = await turnStarts();
+      expect(turns).toHaveLength(2);
+      expect(JSON.stringify(turns[1])).toContain("first result");
+      expect(events.some((event) => event.type === "turn_reported_ends")).toBe(false);
+    },
+  );
+
   it("reports the batch selected for each turn even when another worker ends before that turn starts", async () => {
     const { handle, events } = await open({
       worker: { summary: "first result" },

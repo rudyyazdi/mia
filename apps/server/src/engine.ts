@@ -484,23 +484,34 @@ export class Engine implements CommandEngine {
     return { declared, retention: await this.store(capture, this.stopping.signal) };
   }
 
+  /** The committed tasks a result batch names by their runtime task ids; an id no task has is logged and skipped. */
+  private taskIdsOf(machine: ConversationMachine, runtimeTaskIds: readonly string[]): string[] {
+    return runtimeTaskIds.flatMap((runtimeTaskId) => {
+      const task = this.deps.catalog.get<{ id: string }>(
+        "SELECT id FROM tasks WHERE conversation_id = ? AND runtime_task_id = ?",
+        machine.state?.id ?? "",
+        runtimeTaskId,
+      );
+      if (task === undefined)
+        this.deps.log(`result turn references unknown runtime task ${runtimeTaskId}`);
+      return task === undefined ? [] : [task.id];
+    });
+  }
+
   /** One report of a session, dispatched into the machine of the conversation that opened it. */
   private async onSessionEvent(machine: ConversationMachine, event: SessionEvent): Promise<void> {
     const { runtime } = this.deps.profile;
     const drawn = this.drawn();
     await match(event)
       .with({ type: "runtime_init" }, ({ init }) => {
-        const reportedTaskIds = init.reportedRuntimeTaskIds?.flatMap((runtimeTaskId) => {
-          const task = this.deps.catalog.get<{ id: string }>(
-            "SELECT id FROM tasks WHERE conversation_id = ? AND runtime_task_id = ?",
-            machine.state?.id ?? "",
-            runtimeTaskId,
-          );
-          if (task === undefined)
-            this.deps.log(`result turn references unknown runtime task ${runtimeTaskId}`);
-          return task === undefined ? [] : [task.id];
-        });
+        const { reportedRuntimeTaskIds } = init;
+        const reportedTaskIds =
+          reportedRuntimeTaskIds && this.taskIdsOf(machine, reportedRuntimeTaskIds);
         this.report(machine, { ...drawn, kind: "turn_began", init, reportedTaskIds });
+      })
+      .with({ type: "turn_reported_ends" }, ({ runtimeTaskIds }) => {
+        const reportedTaskIds = this.taskIdsOf(machine, runtimeTaskIds);
+        this.report(machine, { ...drawn, kind: "turn_reported_ends", reportedTaskIds });
       })
       .with({ type: "input_taken" }, ({ runtimeMessageId }) => {
         this.report(machine, { ...drawn, kind: "input_taken", runtimeMessageId });

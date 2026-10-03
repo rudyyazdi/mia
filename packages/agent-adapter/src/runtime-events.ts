@@ -11,7 +11,7 @@ export interface RuntimeInit {
   model: string;
   /**
    * The exact runtime task ids included in this turn's result batch; empty for an adapter-scheduled user turn.
-   * Absent when the runtime owns turn scheduling. Later worker ends must not be attributed to this batch.
+   * Absent when the runtime owns turn scheduling. A later worker end joins this batch only by `turn_reported_ends`.
    */
   reportedRuntimeTaskIds?: readonly string[];
   evidence: unknown;
@@ -41,6 +41,11 @@ export type RuntimeEvent =
   /** A turn took a user message: the UUID Mia sent the message under. */
   | { type: "input_taken"; runtimeMessageId: string; at: string }
   | { type: "runtime_init"; init: RuntimeInit; at: string }
+  /**
+   * The running turn has reported these worker ends too: the adapter added them after the turn began, so they join
+   * the batch its init named (`reportedRuntimeTaskIds`).
+   */
+  | { type: "turn_reported_ends"; runtimeTaskIds: readonly string[]; at: string }
   | { type: "text_delta"; text: string; parentCallId: string | null; at: string }
   | {
       type: "tool_proposed";

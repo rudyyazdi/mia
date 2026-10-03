@@ -107,6 +107,13 @@ export interface TurnBeganEvent extends Drawn {
   reportedTaskIds?: readonly string[];
 }
 
+/** The running turn has also reported these task ends, which the runtime added to it after it began. */
+export interface TurnReportedEndsEvent extends Drawn {
+  kind: "turn_reported_ends";
+  /** Resolved to committed Mia task ids at the persistence boundary, as a turn's own batch is. */
+  reportedTaskIds: readonly string[];
+}
+
 export interface InputTakenEvent extends Drawn {
   kind: "input_taken";
   runtimeMessageId: string;
@@ -231,6 +238,7 @@ export type ConversationEvent =
   | MessageEvent
   | MessageUndeliveredEvent
   | TurnBeganEvent
+  | TurnReportedEndsEvent
   | InputTakenEvent
   | ReplyEvent
   | TurnEndedEvent
@@ -254,6 +262,7 @@ export type ConversationRejection =
   | { kind: "stopping" }
   | { kind: "no_worker_prompt" }
   | { kind: "no_session" }
+  | { kind: "no_turn" }
   | { kind: "not_queued" }
   | { kind: "no_task" }
   | { kind: "duplicate_task" }
@@ -485,6 +494,30 @@ const openTurn = (
       causedByTaskId: reported,
     },
   });
+};
+
+/**
+ * The running turn has also reported these task ends: they join its batch, recorded as its own batch is, whatever
+ * caused the turn.
+ */
+const turnReportedEnds = (
+  state: ConversationState,
+  event: TurnReportedEndsEvent,
+  now: Date,
+): Decided => {
+  const { turn, session } = state;
+  if (turn === null || session === null) return rejected({ kind: "no_turn" });
+  const draft = draftFor(state, event, now);
+  draft.record(
+    "turn_reports_tasks",
+    { turn_id: turn.id, task_ids: event.reportedTaskIds },
+    { id: draft.id("evt"), executionId: session.executionId },
+  );
+  draft.advance({
+    ...draft.draft,
+    endedTasks: state.endedTasks.filter((taskId) => !event.reportedTaskIds.includes(taskId)),
+  });
+  return draft.accepted();
 };
 
 /** The runtime replayed a message as a turn took it: it leaves the queue, and a just-begun turn is the user's. */
@@ -1704,6 +1737,9 @@ export const decideConversation: Decide<
     )
     .with({ kind: "turn_began" }, (began) =>
       whenStarted(state, (started) => turnBegan(started, began, now)),
+    )
+    .with({ kind: "turn_reported_ends" }, (reported) =>
+      whenStarted(state, (started) => turnReportedEnds(started, reported, now)),
     )
     .with({ kind: "input_taken" }, (taken) =>
       whenStarted(state, (started) => inputTaken(started, taken, now)),

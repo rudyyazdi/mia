@@ -29,7 +29,8 @@ import { ADAPTER_VERSION } from "./probe.ts";
 import { HooksListResultSchema, parseCodexLine, ThreadResultSchema } from "./protocol.ts";
 import { ProposalRendezvous } from "./proposals.ts";
 import { CodexTranslator, type Notification } from "./translate.ts";
-import { reportOf, TurnQueue } from "./turn-queue.ts";
+import { SteeredEnds } from "./steered-ends.ts";
+import { reportOf, TurnQueue, type EndReport } from "./turn-queue.ts";
 
 /** What every Codex session needs from the runtime that opens it. */
 interface CodexDeps {
@@ -94,9 +95,9 @@ const ThreadRecordSchema = z.object({ runtimeConversationId: z.string(), threadI
 const MAX_PENDING_SPAWNS = 64;
 
 /**
- * One manager agent's session: it starts the manager agent's turns one at a time from its `TurnQueue`. Input ends
- * once the session is closed, idle, has nothing queued and no worker agent running; Codex exits at the end of its
- * input.
+ * One manager agent's session: it starts the manager agent's turns one at a time from its `TurnQueue`, and steers a
+ * worker agent's end that arrives while a turn runs into that turn (`SteeredEnds`). Input ends once the session is
+ * closed, idle, has nothing queued and no worker agent running; Codex exits at the end of its input.
  */
 class CodexSession {
   readonly #translator = new CodexTranslator();
@@ -104,6 +105,9 @@ class CodexSession {
   /** Delegations the gate allowed whose worker agent has not been reported started. */
   readonly #pendingSpawns = new Set<string>();
   readonly #queue = new TurnQueue();
+  readonly #steered = new SteeredEnds();
+  /** How many ends this session has steered, which names each steer's user message. */
+  #steers = 0;
   /**
    * Mia's note on the end being handed over: the caller notes an end while it handles that end's event, so one slot
    * holds it until the end is queued right after, and the next end clears it.
@@ -116,7 +120,8 @@ class CodexSession {
   #phase: "starting" | "idle" | "turn" = "starting";
   /**
    * The worker ends the latest turn/start reports, fixed when it is sent: Codex begins no manager turn of its own,
-   * so each manager turn's init names exactly its batch, and an end queued after it waits for a later turn.
+   * so each manager turn's init names exactly its batch. An end steered into the turn joins the batch once the turn
+   * answers it (`turn_reported_ends`); any other end waits for a later turn.
    */
   #reportedRuntimeTaskIds: readonly string[] = [];
   #stopped = false;
@@ -367,6 +372,37 @@ class CodexSession {
       );
   }
 
+  /** Reports a worker agent's end: steered into the manager agent's running turn, or else in a turn of its own. */
+  #report(end: EndReport): void {
+    const threadId = this.#threadId;
+    const expectedTurnId = this.#translator.managerTurnId;
+    if (
+      this.#phase !== "turn" ||
+      threadId === null ||
+      expectedTurnId === null ||
+      this.#steered.full
+    ) {
+      this.#queue.end(end);
+      this.#pump();
+      return;
+    }
+    this.#steers += 1;
+    const clientUserMessageId = `mia-end-${this.#steers}`;
+    this.#steered.steer(clientUserMessageId, end);
+    const input = [{ type: "text", text: reportOf([end], 0), text_elements: [] }];
+    // A turn that ended or that Codex will not steer leaves the end to a turn of its own.
+    this.#connection
+      .request(
+        "turn/steer",
+        { threadId, expectedTurnId, clientUserMessageId, input },
+        this.deps.replyDeadline(),
+      )
+      .catch(() => {
+        for (const refused of this.#steered.refused(clientUserMessageId)) this.#queue.end(refused);
+        this.#pump();
+      });
+  }
+
   /** Gives up on the session: it ends as failed once Codex exits at the end of its input. */
   #giveUp(reason: string): void {
     this.#failure ??= reason;
@@ -440,6 +476,8 @@ class CodexSession {
         });
     }
     for (const event of this.#translator.translate(notification, now)) {
+      // A steer's user message is Mia's report, not a message the engine sent.
+      if (event.type === "input_taken" && this.#steered.recorded(event.runtimeMessageId)) continue;
       await onEvent(
         event.type === "runtime_init"
           ? {
@@ -452,13 +490,16 @@ class CodexSession {
     }
   }
 
-  /** What the session does after handing over an event: settles delegations, queues ends, takes the next turn. */
+  /**
+   * What the session does after handing over an event: settles delegations, reports ends, counts steered ends the
+   * manager agent answered, takes the next turn.
+   */
   async #react(event: SessionEvent): Promise<void> {
     if (event.type === "worker_started") this.#pendingSpawns.delete(event.delegationCallId);
     if (event.type === "worker_ended") {
       const noted = this.#endNote;
       this.#endNote = null;
-      this.#queue.end({
+      this.#report({
         path: this.#translator.pathOf(event.runtimeTaskId) ?? event.runtimeTaskId,
         threadId: event.runtimeTaskId,
         end: event.end,
@@ -466,9 +507,18 @@ class CodexSession {
         summary: this.#translator.finalTextOf(event.runtimeTaskId),
         note: noted?.runtimeTaskId === event.runtimeTaskId ? noted.note : null,
       });
-      this.#pump();
+    }
+    if (event.type === "text_delta" && event.parentCallId === null) {
+      const answered = this.#steered.answered();
+      if (answered.length > 0)
+        await this.options.onEvent({
+          type: "turn_reported_ends",
+          runtimeTaskIds: answered.map((end) => end.threadId),
+          at: now(),
+        });
     }
     if (event.type !== "turn_result") return;
+    for (const end of this.#steered.turnEnded()) this.#queue.end(end);
     // A delegation the gate allowed whose worker agent Codex never reported starting did not start.
     for (const callId of [...this.#pendingSpawns]) {
       this.#pendingSpawns.delete(callId);

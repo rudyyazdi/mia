@@ -34,7 +34,7 @@ export const reportOf = (ends: readonly EndReport[], unlisted: number): string =
     ...(unlisted === 0
       ? []
       : [
-          `[Mia] ${unlisted} more worker agents ended; Mia will not list them, so report only this count, not their outcomes.`,
+          `[Mia] ${unlisted} more worker ${unlisted === 1 ? "agent" : "agents"} ended; Mia will not list ${unlisted === 1 ? "that end" : "those ends"}, so report only this count, not their outcomes.`,
         ]),
   ].join("\n");
 

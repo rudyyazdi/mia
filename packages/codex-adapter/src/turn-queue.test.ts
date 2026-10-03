@@ -45,7 +45,7 @@ describe("reportOf", () => {
       "[Mia] Report the outcomes of exactly these worker agents in this reply: /root/a, /root/b.",
       "[Mia] Worker agent /root/a (id a) ended: completed. Its final message: The counter is 6.",
       "[Mia] Worker agent /root/b (id b) ended: failed. [Mia note] x did not run.",
-      "[Mia] 1 more worker agents ended; Mia will not list them, so report only this count, not their outcomes.",
+      "[Mia] 1 more worker agent ended; Mia will not list that end, so report only this count, not their outcomes.",
     ]);
   });
 
@@ -62,7 +62,7 @@ describe("reportOf", () => {
     );
     expect(lines.filter((line) => line.includes(`/root/w${MAX_LISTED_ENDS}`))).toEqual([]);
     expect(lines.at(-1)).toBe(
-      "[Mia] 1 more worker agents ended; Mia will not list them, so report only this count, not their outcomes.",
+      "[Mia] 1 more worker agent ended; Mia will not list that end, so report only this count, not their outcomes.",
     );
   });
 });

@@ -341,8 +341,7 @@ class CodexSession {
       return;
     }
     this.#phase = "turn";
-    this.#reportedRuntimeTaskIds =
-      next.kind === "ends" ? next.ends.map((end) => end.threadId) : undefined;
+    this.#reportedRuntimeTaskIds = next.kind === "ends" ? next.ends.map((end) => end.threadId) : [];
     const params = match(next)
       .with({ kind: "message" }, ({ text, runtimeMessageId }) => ({
         input: [{ type: "text", text, text_elements: [] }],

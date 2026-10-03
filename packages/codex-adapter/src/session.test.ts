@@ -97,7 +97,7 @@ describe("a Codex session", () => {
       events.flatMap((event) =>
         event.type === "runtime_init" ? [event.init.reportedRuntimeTaskIds] : [],
       ),
-    ).toEqual([undefined, ["worker-1"], ["worker-2"]]);
+    ).toEqual([[], ["worker-1"], ["worker-2"]]);
   });
   it("ends as failed when Codex refuses a turn, rather than losing the message", async () => {
     const { handle } = await open({ turnStart: "reject" });

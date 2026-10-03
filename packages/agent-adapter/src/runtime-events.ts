@@ -10,7 +10,7 @@ import type { LaunchDescription } from "./session.ts";
 export interface RuntimeInit {
   model: string;
   /**
-   * When the adapter starts a turn to report worker results, the exact runtime task ids included in its input.
+   * The exact runtime task ids included in this turn's result batch; empty for an adapter-scheduled user turn.
    * Absent when the runtime owns turn scheduling. Later worker ends must not be attributed to this batch.
    */
   reportedRuntimeTaskIds?: readonly string[];

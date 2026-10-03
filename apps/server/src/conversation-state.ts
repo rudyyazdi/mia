@@ -44,7 +44,12 @@ export interface ConversationState {
    */
   readonly turn: TurnState | null;
   /** The runtime began a turn whose cause has not shown yet: its init's evidence, to record with the turn. */
-  readonly openingTurn: { readonly initEvidence: unknown; readonly model: string } | null;
+  readonly openingTurn: {
+    readonly initEvidence: unknown;
+    readonly model: string;
+    /** Null permits runtime-owned inference; an empty batch must never claim pending worker ends. */
+    readonly reportedTaskIds: readonly string[] | null;
+  } | null;
   /**
    * The delegations the gate allowed whose worker agent the runtime has not reported starting yet, by delegation call
    * id: they count against MAX_RUNNING_TASKS, so parallel delegations cannot exceed it.

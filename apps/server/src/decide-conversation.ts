@@ -407,10 +407,16 @@ const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): 
     finishTurn(draft, { status: "failed", error: "no result before the next turn" });
   draft.advance({
     ...draft.draft,
-    openingTurn: { initEvidence: event.init.evidence, model: event.init.model },
+    openingTurn: {
+      initEvidence: event.init.evidence,
+      model: event.init.model,
+      reportedTaskIds: event.reportedTaskIds ?? null,
+    },
   });
-  if (event.reportedTaskIds !== undefined)
-    openTurn(draft, { kind: "activity", reportedTaskIds: event.reportedTaskIds });
+  // A message turn waits for input_taken to preserve its message link. Its explicit empty batch also prevents
+  // activity from claiming pending results when the runtime omits that input notification.
+  if (event.reportedTaskIds !== undefined && event.reportedTaskIds.length > 0)
+    openTurn(draft, { kind: "activity" });
   return draft.accepted();
 };
 
@@ -421,16 +427,14 @@ const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): 
  */
 const openTurn = (
   draft: ConversationDraft,
-  cause:
-    | { kind: "message"; eventId: string }
-    | { kind: "activity"; reportedTaskIds?: readonly string[] },
+  cause: { kind: "message"; eventId: string } | { kind: "activity" },
 ): void => {
   const state = draft.draft;
   const { openingTurn, session } = state;
   if (state.turn !== null || openingTurn === null || session === null) return;
   const turnId = draft.id("turn");
   const reportedTasks =
-    cause.kind === "activity" ? (cause.reportedTaskIds ?? state.endedTasks) : [];
+    cause.kind === "activity" ? (openingTurn.reportedTaskIds ?? state.endedTasks) : [];
   const reported = reportedTasks[0] ?? null;
   draft.write({
     kind: "create_turn",

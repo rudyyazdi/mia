@@ -208,6 +208,37 @@ const taskOf = (state: ConversationState, runtimeTaskId: string) => {
 };
 
 describe("messages and turns", () => {
+  it("keeps replies from an unresolved explicit batch without consuming unrelated ends", () => {
+    const ended = after(running("a1"), workerEnded("a1"));
+    const opened = accepted(ended, { ...turnBegan, reportedTaskIds: [] });
+    expect(opened.next.turn).toMatchObject({ cause: "user_input", causedByTaskId: null });
+    expect(opened.next.endedTasks).toEqual(ended.endedTasks);
+    expect(recordLabels(opened.records)).not.toContain("turn_reports_tasks");
+    const replied = accepted(opened.next, {
+      kind: "reply_text",
+      ...drawn,
+      text: "Result unavailable",
+    });
+    expect(effectLabels(replied.effects)).toContain("deliver reply_delta");
+    expect(accepted(replied.next, turnEnded).next.turn).toBeNull();
+  });
+
+  it("attributes explicit batches even after their ends leave the bounded recent list", () => {
+    const ended = after(running("a1"), turnEnded, workerEnded("a1"));
+    const taskId = ended.endedTasks[0];
+    if (taskId === undefined) throw new Error("missing ended task");
+    const opened = accepted(
+      { ...ended, endedTasks: ["later-task"] },
+      {
+        ...turnBegan,
+        reportedTaskIds: [taskId],
+      },
+    );
+    expect(opened.next.turn).toMatchObject({ cause: "task_end", causedByTaskId: taskId });
+    expect(opened.next.endedTasks).toEqual(["later-task"]);
+    expect(recordLabels(opened.records)).toContain("turn_reports_tasks");
+  });
+
   it("accepts a message while tasks run, and opens the session only for the first", () => {
     expect(effectLabels(accepted(started(), message("one")).effects)).toEqual([
       "open_session",

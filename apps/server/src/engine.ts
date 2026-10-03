@@ -52,6 +52,7 @@ import {
   MAX_BODY_LOG_BYTES,
   mcpBodiesFrom,
   unrecordedBodies,
+  uncorrelatedBodiesFor,
   type BodyReadPoint,
   type McpBody,
 } from "./mcp-bodies.ts";
@@ -441,6 +442,8 @@ export class Engine implements CommandEngine {
     runtimeCallId: string,
     readAt: BodyReadPoint,
   ): Promise<McpBody[]> {
+    const uncorrelated = uncorrelatedBodiesFor(this.deps.profile.runtime.kind);
+    if (uncorrelated !== null) return uncorrelated;
     const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
     const read = await this.deps.readEvidence(path, { signal, maxBytes: MAX_BODY_LOG_BYTES });
     try {
@@ -496,6 +499,8 @@ export class Engine implements CommandEngine {
             machine.state?.id ?? "",
             runtimeTaskId,
           );
+          if (task === undefined)
+            this.deps.log(`result turn references unknown runtime task ${runtimeTaskId}`);
           return task === undefined ? [] : [task.id];
         });
         this.report(machine, { ...drawn, kind: "turn_began", init, reportedTaskIds });

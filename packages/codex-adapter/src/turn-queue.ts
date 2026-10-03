@@ -28,7 +28,9 @@ export const reportOf = (ends: readonly EndReport[], unlisted: number): string =
     ),
     ...(unlisted === 0
       ? []
-      : [`[Mia] ${unlisted} more worker agents ended; their results are in Mia's records.`]),
+      : [
+          `[Mia] ${unlisted} more worker agents ended; their results are in Mia's records but are not included in this turn's attributed batch.`,
+        ]),
   ].join("\n");
 
 /**
@@ -36,7 +38,8 @@ export const reportOf = (ends: readonly EndReport[], unlisted: number): string =
  * ends, so ends wait here for a turn that reports them. The next turn reports every end waiting, before any message
  * waiting. The session reports the selected batch's task ids when its turn begins; ends arriving after take()
  * belong to a later turn. Messages are bounded by the caller's own message bound; ends are listed up to
- * MAX_LISTED_ENDS and counted past it.
+ * MAX_LISTED_ENDS and counted past it. Count-only overflow has no per-task attribution: retaining every id would
+ * make this queue unbounded. The prompt explicitly distinguishes these omitted results from the selected batch.
  */
 export class TurnQueue {
   readonly #messages: { text: string; runtimeMessageId: string }[] = [];

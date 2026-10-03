@@ -33,6 +33,8 @@ export interface McpHttpServerOptions {
    * request.
    */
   bodyLogFile?: string;
+  /** Draw a unique ID for each logged exchange; defaults to randomUUID. */
+  newExchangeId?: () => string;
   /** Receives the first failed write of either log; defaults to a line on stderr. */
   reportLogFailure?: (error: unknown) => void;
   /** Build a fresh McpServer per request (stateless Streamable HTTP mode). */
@@ -99,10 +101,11 @@ class ObservedTransport extends StreamableHTTPServerTransport {
 const transportFor = async (
   body: unknown,
   bodyLog: BodyLog | undefined,
+  newExchangeId: () => string,
 ): Promise<StreamableHTTPServerTransport> => {
   if (!bodyLog) return new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const calls = new Map(
-    [...toolCallsIn(body)].map(([id, call]) => [id, { ...call, exchangeId: randomUUID() }]),
+    [...toolCallsIn(body)].map(([id, call]) => [id, { ...call, exchangeId: newExchangeId() }]),
   );
   if (calls.size === 0) return new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   for (const call of calls.values())
@@ -277,7 +280,7 @@ export const startMcpHttpServer = async (
       if (!completed) closeController.abort(new Error("connection closed before response"));
     });
     const ctx: McpRequestContext = { connectionClosed: closeController.signal, requestId: reqNo };
-    const transport = await transportFor(parsedBody, bodyLog);
+    const transport = await transportFor(parsedBody, bodyLog, options.newExchangeId ?? randomUUID);
     // The client may have gone while the body log was written; its close has fired, so nothing would close these.
     if (res.destroyed) return;
     const server = options.createServer(ctx);

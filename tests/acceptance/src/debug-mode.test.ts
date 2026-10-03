@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { RuntimeKind } from "@mia/agent-adapter";
 import { TOOL_USE_ID_META } from "@mia/mcp-http";
 import { REDACTED } from "@mia/protocol";
 import {
@@ -42,20 +43,27 @@ const writeBodyLog = (path: string, lines: readonly unknown[]): void =>
  * A fresh server with debug mode on or off whose fixture server names a body log in a fresh directory (none with
  * `bodyLog` "unconfigured"), and a message whose turn has started worker agent a1.
  */
-const startWork = async (debugMode: boolean, bodyLog: "configured" | "unconfigured") => {
+const startWork = async (
+  debugMode: boolean,
+  bodyLog: "configured" | "unconfigured",
+  runtime: RuntimeKind = "claude-code",
+) => {
   const logDirectory = mkdtempSync(join(tmpdir(), "mia-body-log-"));
   directories.push(logDirectory);
   const bodyLogFile = join(logDirectory, "mcp-bodies.jsonl");
   const sessions = new ScriptedSessions();
   const server = await startTestServer(
     sessions,
-    bodyLog === "unconfigured"
-      ? {}
-      : {
-          mcpServers: {
-            fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: bodyLogFile },
-          },
-        },
+    {
+      kind: runtime,
+      ...(bodyLog === "unconfigured"
+        ? {}
+        : {
+            mcpServers: {
+              fixture: { type: "http", url: "http://127.0.0.1:1/mcp", bodyLog: bodyLogFile },
+            },
+          }),
+    },
     { debugMode },
   );
   servers.push(server);
@@ -117,6 +125,32 @@ const readCall = async (
 };
 
 describe("debug mode", () => {
+  it("reports unsupported Codex correlation without reading the body log", async () => {
+    const work = await startWork(true, "configured", "codex");
+    const held = work.server.holdEvidenceRead(work.bodyLogFile);
+    try {
+      const result = readCall(work, "missing");
+      const first = await Promise.race([
+        result.then((tables) => ({ kind: "result" as const, tables })),
+        held.started.then(() => ({ kind: "read" as const })),
+      ]);
+      held.release();
+      await result;
+      expect(first.kind).toBe("result");
+      if (first.kind === "result")
+        expect(mcpBodiesOf(first.tables).map(payloadOf)).toEqual([
+          expect.objectContaining({
+            unrecorded: expect.stringContaining("without call attribution"),
+          }),
+          expect.objectContaining({
+            unrecorded: expect.stringContaining("without call attribution"),
+          }),
+        ]);
+    } finally {
+      held.release();
+    }
+  });
+
   it("records that the conversation was captured in debug mode, once, right after it started", async () => {
     const work = await startWork(true, "configured");
     const tables = tablesOf(work.server, work.client.conversationId);

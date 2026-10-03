@@ -28,7 +28,7 @@ describe("TurnQueue", () => {
     expect(turn).toMatchObject({ kind: "ends", unlisted: 2 });
     expect(turn?.kind === "ends" ? turn.ends : []).toHaveLength(MAX_LISTED_ENDS);
     expect(reportOf([], 2)).toBe(
-      "[Mia] 2 more worker agents ended; their results are in Mia's records.",
+      "[Mia] 2 more worker agents ended; their results are in Mia's records but are not included in this turn's attributed batch.",
     );
   });
 });

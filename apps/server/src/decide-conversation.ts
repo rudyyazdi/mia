@@ -402,7 +402,6 @@ const messageUndelivered = (
 /** The runtime began a manager turn (a fresh init, capability record W4); its cause shows with what comes next. */
 const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): Decided => {
   if (state.session === null) return rejected({ kind: "no_session" });
-  if (event.reportedTaskIds?.length === 0) return rejected({ kind: "no_task" });
   const draft = draftFor(state, event, now);
   if (state.turn !== null)
     finishTurn(draft, { status: "failed", error: "no result before the next turn" });

@@ -342,6 +342,7 @@ describe("MCP HTTP server body log", () => {
   /** Serves one tool, `echo`, that answers with the text it was given. */
   const startEchoServer = async (options: {
     bodyLogFile: string;
+    newExchangeId?: () => string;
     reportLogFailure?: (error: unknown) => void;
   }) => {
     handle = await startMcpHttpServer({
@@ -393,7 +394,11 @@ describe("MCP HTTP server body log", () => {
 
   it("pairs uncorrelated exchanges independently when concurrent clients reuse a JSON-RPC id", async () => {
     const bodyLogFile = join(dir, "bodies.jsonl");
-    const server = await startEchoServer({ bodyLogFile });
+    let exchangeCount = 0;
+    const server = await startEchoServer({
+      bodyLogFile,
+      newExchangeId: () => `exchange-${++exchangeCount}`,
+    });
     await (await initialize(server.url)).text();
     await Promise.all(
       [undefined, { other: "metadata" }].map(async (meta) => {
@@ -404,7 +409,7 @@ describe("MCP HTTP server body log", () => {
     const lines = (await readLogEntries(bodyLogFile)).map((line) => BodyLogLineSchema.parse(line));
     expect(lines).toHaveLength(4);
     const requests = lines.filter((line) => line.direction === "request");
-    expect(new Set(requests.map((line) => line.exchange_id)).size).toBe(2);
+    expect(requests.map((line) => line.exchange_id).sort()).toEqual(["exchange-1", "exchange-2"]);
     for (const request of requests) {
       expect(request).toMatchObject({ tool_use_id: null, exchange_id: expect.any(String) });
       expect(lines.filter((line) => line.exchange_id === request.exchange_id)).toEqual([

@@ -48,24 +48,30 @@ const DIRECTIONS: readonly BodyDirection[] = ["request", "response"];
 export const unrecordedBodies = (reason: string): McpBody[] =>
   DIRECTIONS.map((direction) => ({ direction, status: "unrecorded", reason }));
 
+/** Codex omits tool-use metadata; retain transport exchanges without guessing a runtime call from their contents. */
+export const uncorrelatedBodiesFor = (runtime: RuntimeKind): McpBody[] | null =>
+  match(runtime)
+    .with("claude-code", () => null)
+    .with("codex", () =>
+      unrecordedBodies(
+        "Codex does not supply a correlatable tool-use id; MCP exchanges remain in the body log without call attribution",
+      ),
+    )
+    .exhaustive();
+
 /** What a runtime call records from its server's body log, without guessing unsupported runtime correlation. */
 export const mcpBodiesFrom = (
   read: RuntimeFileRead,
   toolUseId: string,
   context: { readAt: BodyReadPoint; runtime: RuntimeKind },
 ): McpBody[] =>
+  uncorrelatedBodiesFor(context.runtime) ??
   match(read)
     .with({ status: "absent" }, () => unrecordedBodies("the body log does not exist"))
     .with({ status: "unreadable" }, ({ reason }) =>
       unrecordedBodies(`the body log is unreadable: ${reason}`),
     )
     .with({ status: "read" }, ({ bytes }) => {
-      // Codex does not send the Claude tool-use metadata. Transport exchanges are retained by the fixture but
-      // cannot be attributed to this call; never infer a match from similar arguments or nearby timestamps.
-      if (context.runtime === "codex")
-        return unrecordedBodies(
-          "Codex does not supply a correlatable tool-use id; MCP exchanges remain in the body log without call attribution",
-        );
       const lines = bodyLogLinesFor(bytes.toString("utf8"), toolUseId);
       const recorded = lines.map((line): McpBody => ({
         direction: line.direction,

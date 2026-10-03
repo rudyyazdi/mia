@@ -114,7 +114,6 @@ export const ScenarioEvidenceSchema = z.object({
   profile: ScenarioProfileSchema,
   conversation_id: z.string(),
   tasks: z.array(z.object({ task_id: z.string(), status: TaskStatusSchema })),
-  /** Each turn's reply, in the order the turns started. */
   /** Each turn's reply, in the order the turns started, with the tasks whose end it reports. */
   replies: z.array(
     z.object({

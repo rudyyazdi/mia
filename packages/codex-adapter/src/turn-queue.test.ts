@@ -27,8 +27,24 @@ describe("TurnQueue", () => {
     const turn = queue.take();
     expect(turn).toMatchObject({ kind: "ends", unlisted: 2 });
     expect(turn?.kind === "ends" ? turn.ends : []).toHaveLength(MAX_LISTED_ENDS);
-    expect(reportOf([], 2)).toBe(
+    expect(
+      reportOf([ended("a")], 2)
+        .split("\n")
+        .at(-1),
+    ).toBe(
       "[Mia] 2 more worker agents ended; their results are in Mia's records but are not included in this turn's attributed batch.",
     );
+  });
+});
+
+describe("reportOf", () => {
+  // Codex shows the manager agent a worker agent's final message itself, mid-turn, as "Message Type: FINAL_ANSWER"
+  // with "Sender: <path>"; a report that did not say which senders it covers had the manager agent report a later
+  // batch's end early, and then again when Mia reported it.
+  it("scopes the reply to the senders it lists and defers Codex's own final message from any other", () => {
+    const [scope = ""] = reportOf([ended("a"), ended("b")], 0).split("\n");
+    expect(scope).toContain("only: /root/a, /root/b.");
+    expect(scope).toContain('"Message Type: FINAL_ANSWER" message from any other Sender');
+    expect(scope).toContain("leave it out of this reply");
   });
 });

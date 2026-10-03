@@ -54,8 +54,11 @@ export const LEFTOVER_TOOLS = [
   "collaboration.followup_task",
 ] as const;
 
-/** How the manager agent delegates and stops work in Codex, appended to Mia's instructions, which name no tool. */
-export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call spawn_agent directly (never from inside exec) with agent_type \`${WORKER_AGENT_NAME}\`, a short task_name, and the task as its message. A worker agent runs in the background: never call wait_agent, list_agents, send_message or followup_task. To stop a worker agent, call interrupt_agent with its id or its path as target.`;
+/**
+ * How the manager agent delegates, stops and reports work in Codex, appended to Mia's instructions, which name no tool
+ * and no runtime's way of reporting an end (see reportOf for why a worker agent's own final message is deferred).
+ */
+export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call spawn_agent directly (never from inside exec) with agent_type \`${WORKER_AGENT_NAME}\`, a short task_name, and the task as its message. A worker agent runs in the background: never call wait_agent, list_agents, send_message or followup_task. To stop a worker agent, call interrupt_agent with its id or its path as target. Mia tells you of each worker agent's end in a turn with a "[Mia] Worker agent <path> ..." line for it; report an end only in such a turn, and in it report exactly the worker agents it lists. Codex may also show you a worker agent's final message itself, at any time, as "Message Type: FINAL_ANSWER", "Sender: <its path>", "Payload: ...". Until a turn lists that path, do not report, mention or act on that message: Mia lists it in a later turn, and reporting it now as well would tell the user twice.`;
 
 // ---------------------------------------------------------------- TOML
 

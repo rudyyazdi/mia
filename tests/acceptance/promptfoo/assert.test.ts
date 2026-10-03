@@ -93,4 +93,38 @@ describe("scenario assertion", () => {
       }).reason,
     ).toBe("tasks never ended: task");
   });
+
+  it("fails set-and-deduct on a set made as a read plus a delta, or a reply claiming the counter unchanged", () => {
+    const setAndDeduct = (
+      changes: Record<string, number>[],
+      reply = "The deduction was rejected and did not run.",
+    ) =>
+      evidenceFor("set-and-deduct", {
+        events: changes.map((args) => ({
+          type: "approval_requested",
+          sequence: 1,
+          payload: { redacted_arguments: args },
+        })),
+        replies: [{ turn_id: "turn", cause: "task_end", text: reply }],
+        ledger_after: {
+          counter: -1,
+          commits: changes
+            .slice(0, 3)
+            .map((args, index) => ({ tool: "change", call_id: `call-${index}`, args })),
+          returned: [],
+          entered: [],
+          kinds: {},
+        },
+      });
+    const deduct = { delta: -1 };
+    const expected = [{ value: 0 }, { value: 0 }, deduct, deduct];
+    expect(judge("set-and-deduct", setAndDeduct(expected)).pass).toBe(true);
+    expect(
+      judge("set-and-deduct", setAndDeduct([{ delta: -12 }, { value: 0 }, deduct, deduct])).pass,
+    ).toBe(false);
+    expect(
+      judge("set-and-deduct", setAndDeduct(expected, "Rejected: the counter was not changed."))
+        .reason,
+    ).toMatch(/^a reply claimed the counter unchanged/);
+  });
 });

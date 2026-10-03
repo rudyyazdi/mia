@@ -45,6 +45,7 @@ export const ScenarioNameSchema = z.enum([
   "interrupt-all",
   "allow-policy-no-prompt",
   "artifact-export",
+  "set-and-deduct",
 ]);
 export type ScenarioName = z.infer<typeof ScenarioNameSchema>;
 
@@ -85,7 +86,11 @@ const ENTERED_TIMEOUT_MS = 300_000;
 const LEDGER_SETTLE_TIMEOUT_MS = 5_000;
 const acknowledgedWithin = (ctx: ScenarioContext) => ({ signal: ctx.within(ACK_TIMEOUT_MS) });
 
-const LedgerRefSchema = z.object({ tool: z.string(), call_id: z.string() });
+const LedgerRefSchema = z.object({
+  tool: z.string(),
+  call_id: z.string(),
+  args: z.unknown().optional(),
+});
 
 /** How the server acknowledged a decision the scenario sent; a refusal always names its error code. */
 const DecisionAckSchema = z.discriminatedUnion("disposition", [
@@ -332,6 +337,23 @@ export const SCENARIOS: Scenario[] = [
       return say(ctx, "Call fixture.artifact with name result.txt and text OK. Report the result.");
     },
   },
+  {
+    // Two tasks set a seeded counter at once, then two deduct from it, one approved and one rejected: a set must be one
+    // call, and neither a rejected call nor an unexpected result may lead to a claim about the counter or a correction.
+    name: "set-and-deduct",
+    profile: "fixture-test",
+    decide: ({ index }) => (index < 3 ? "approve" : "reject"),
+    run: async (ctx, notes) => {
+      await ctx.harness.seedCounter(12);
+      notes.push("counter seeded to 12");
+      const setToZero = "Set the fixture counter to 0.";
+      await send(ctx, setToZero);
+      await settled(ctx, await send(ctx, setToZero));
+      const deductOne = "Deduct 1 from the fixture counter.";
+      await send(ctx, deductOne);
+      await settled(ctx, await send(ctx, deductOne));
+    },
+  },
 ];
 
 /** The definition of a declared scenario; a unit test keeps every declared name defined exactly once. */
@@ -413,7 +435,7 @@ export const runScenario = async (
   const refsOf = (kind: LedgerKind) =>
     after.ledger
       .filter((entry) => entry.kind === kind)
-      .map((entry) => ({ tool: entry.tool, call_id: entry.call_id }));
+      .map((entry) => ({ tool: entry.tool, call_id: entry.call_id, args: entry.args }));
   const { events } = client;
   if (!client.conversationId) throw new Error("client has no conversation");
   return {

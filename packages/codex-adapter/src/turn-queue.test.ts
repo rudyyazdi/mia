@@ -27,24 +27,42 @@ describe("TurnQueue", () => {
     const turn = queue.take();
     expect(turn).toMatchObject({ kind: "ends", unlisted: 2 });
     expect(turn?.kind === "ends" ? turn.ends : []).toHaveLength(MAX_LISTED_ENDS);
-    expect(
-      reportOf([ended("a")], 2)
-        .split("\n")
-        .at(-1),
-    ).toBe(
-      "[Mia] 2 more worker agents ended; their results are in Mia's records but are not included in this turn's attributed batch.",
-    );
   });
 });
 
 describe("reportOf", () => {
-  // Codex shows the manager agent a worker agent's final message itself, mid-turn, as "Message Type: FINAL_ANSWER"
-  // with "Sender: <path>"; a report that did not say which senders it covers had the manager agent report a later
-  // batch's end early, and then again when Mia reported it.
-  it("scopes the reply to the senders it lists and defers Codex's own final message from any other", () => {
-    const [scope = ""] = reportOf([ended("a"), ended("b")], 0).split("\n");
-    expect(scope).toContain("only: /root/a, /root/b.");
-    expect(scope).toContain('"Message Type: FINAL_ANSWER" message from any other Sender');
-    expect(scope).toContain("leave it out of this reply");
+  // Codex shows the manager agent a worker agent's final message itself, mid-turn; the report names exactly whose
+  // outcomes the reply may give, so a later batch's end is not reported early and again when Mia reports it.
+  it("names exactly its batch, then each end, then the count it does not list", () => {
+    const report = reportOf(
+      [
+        { ...ended("a"), summary: "The counter is 6." },
+        { ...ended("b"), end: "failed", note: "[Mia note] x did not run." },
+      ],
+      1,
+    );
+    expect(report.split("\n")).toEqual([
+      "[Mia] Report the outcomes of exactly these worker agents in this reply: /root/a, /root/b.",
+      "[Mia] Worker agent /root/a (id a) ended: completed. Its final message: The counter is 6.",
+      "[Mia] Worker agent /root/b (id b) ended: failed. [Mia note] x did not run.",
+      "[Mia] 1 more worker agents ended; Mia will not list them, so report only this count, not their outcomes.",
+    ]);
+  });
+
+  it("leaves an end past the bound out of the batch it names, and promises no later listing of it", () => {
+    const queue = new TurnQueue();
+    for (const index of Array.from({ length: MAX_LISTED_ENDS + 1 }, (_, at) => at))
+      queue.end(ended(`w${index}`));
+    const turn = queue.take();
+    if (turn?.kind !== "ends") throw new Error("expected an ends turn");
+    const lines = reportOf(turn.ends, turn.unlisted).split("\n");
+    const listed = Array.from({ length: MAX_LISTED_ENDS }, (_, at) => `/root/w${at}`);
+    expect(lines[0]).toBe(
+      `[Mia] Report the outcomes of exactly these worker agents in this reply: ${listed.join(", ")}.`,
+    );
+    expect(lines.filter((line) => line.includes(`/root/w${MAX_LISTED_ENDS}`))).toEqual([]);
+    expect(lines.at(-1)).toBe(
+      "[Mia] 1 more worker agents ended; Mia will not list them, so report only this count, not their outcomes.",
+    );
   });
 });

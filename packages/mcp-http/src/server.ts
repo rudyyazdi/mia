@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,12 +26,15 @@ export interface McpHttpServerOptions {
   logFile?: string;
   /**
    * JSON-lines file that receives the body of each `tools/call` request and of its response, keyed by the call's
-   * tool-use id (`TOOL_USE_ID_META`); unset or empty logs none, and a call without a tool-use id is not logged. A
+   * tool-use id when supplied (`TOOL_USE_ID_META`), plus a unique exchange id even when no runtime id is supplied.
+   * Unset or empty logs none. A
    * request's line is written before it is handled and a response's before it is sent, so a client that has seen
    * a response finds both lines. A write failure is reported once and turns the body log off; it never fails a
    * request.
    */
   bodyLogFile?: string;
+  /** Draw a unique ID for each logged exchange; defaults to randomUUID. */
+  newExchangeId?: () => string;
   /** Receives the first failed write of either log; defaults to a line on stderr. */
   reportLogFailure?: (error: unknown) => void;
   /** Build a fresh McpServer per request (stateless Streamable HTTP mode). */
@@ -97,17 +101,30 @@ class ObservedTransport extends StreamableHTTPServerTransport {
 const transportFor = async (
   body: unknown,
   bodyLog: BodyLog | undefined,
+  newExchangeId: () => string,
 ): Promise<StreamableHTTPServerTransport> => {
-  const calls = bodyLog ? toolCallsIn(body) : new Map();
-  if (!bodyLog || calls.size === 0)
-    return new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  if (!bodyLog) return new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const calls = new Map(
+    [...toolCallsIn(body)].map(([id, call]) => [id, { ...call, exchangeId: newExchangeId() }]),
+  );
+  if (calls.size === 0) return new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   for (const call of calls.values())
-    await bodyLog.append({ tool_use_id: call.toolUseId, direction: "request", body: call.body });
+    await bodyLog.append({
+      tool_use_id: call.toolUseId,
+      exchange_id: call.exchangeId,
+      direction: "request",
+      body: call.body,
+    });
   return new ObservedTransport(async (message) => {
     const id = responseId(message);
     const call = id === null ? undefined : calls.get(id);
     if (call)
-      await bodyLog.append({ tool_use_id: call.toolUseId, direction: "response", body: message });
+      await bodyLog.append({
+        tool_use_id: call.toolUseId,
+        exchange_id: call.exchangeId,
+        direction: "response",
+        body: message,
+      });
   });
 };
 
@@ -263,7 +280,7 @@ export const startMcpHttpServer = async (
       if (!completed) closeController.abort(new Error("connection closed before response"));
     });
     const ctx: McpRequestContext = { connectionClosed: closeController.signal, requestId: reqNo };
-    const transport = await transportFor(parsedBody, bodyLog);
+    const transport = await transportFor(parsedBody, bodyLog, options.newExchangeId ?? randomUUID);
     // The client may have gone while the body log was written; its close has fired, so nothing would close these.
     if (res.destroyed) return;
     const server = options.createServer(ctx);

@@ -52,6 +52,13 @@ Copy `examples/config/production-opus.example.json` (Claude Code) or `examples/c
   [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456)).
 - `runtime.exclusiveTools`: tools only one worker agent may use at a time.
 
+## Runtime differences
+
+Claude Code schedules its own worker-result turns, so Mia infers their task attribution from pending results.
+Mia schedules Codex turns and supplies the exact result batch, including an empty batch for user messages.
+Shared MCP logging preserves Claude's tool-use ID correlation and records Codex exchanges without per-call
+attribution. This requires no additional scheduling or correlation logic in the Claude Code adapter.
+
 ## Run
 
 ```sh

@@ -103,6 +103,8 @@ export interface MessageUndeliveredEvent extends Drawn {
 export interface TurnBeganEvent extends Drawn {
   kind: "turn_began";
   init: RuntimeInit;
+  /** The adapter's exact result batch, resolved to committed Mia task ids at the persistence boundary. */
+  reportedTaskIds?: readonly string[];
 }
 
 export interface InputTakenEvent extends Drawn {
@@ -405,14 +407,19 @@ const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): 
     finishTurn(draft, { status: "failed", error: "no result before the next turn" });
   draft.advance({
     ...draft.draft,
-    openingTurn: { initEvidence: event.init.evidence, model: event.init.model },
+    openingTurn: {
+      initEvidence: event.init.evidence,
+      model: event.init.model,
+      reportedTaskIds: event.reportedTaskIds ?? null,
+    },
   });
   return draft.accepted();
 };
 
 /**
  * Record the turn the runtime began, now that its cause shows: a message the runtime replayed makes it the user's;
- * anything else first makes it the report of every task end no turn reported yet. No turn opening: nothing to do.
+ * anything else makes it the report of the batch the runtime named (none, for a message turn whose replay never
+ * came), or, from a runtime that names none, of every task end not reported yet. No turn opening: nothing to do.
  */
 const openTurn = (
   draft: ConversationDraft,
@@ -422,8 +429,9 @@ const openTurn = (
   const { openingTurn, session } = state;
   if (state.turn !== null || openingTurn === null || session === null) return;
   const turnId = draft.id("turn");
-  const [firstEnded] = state.endedTasks;
-  const reported = cause.kind === "activity" ? (firstEnded ?? null) : null;
+  const reportedTasks =
+    cause.kind === "activity" ? (openingTurn.reportedTaskIds ?? state.endedTasks) : [];
+  const reported = reportedTasks[0] ?? null;
   draft.write({
     kind: "create_turn",
     input: {
@@ -463,14 +471,14 @@ const openTurn = (
   if (reported !== null)
     draft.record(
       "turn_reports_tasks",
-      { turn_id: turnId, task_ids: state.endedTasks },
+      { turn_id: turnId, task_ids: reportedTasks },
       { id: draft.id("evt"), executionId: session.executionId },
     );
   draft.advance({
     ...draft.draft,
     sessionStarted: true,
     openingTurn: null,
-    endedTasks: reported === null ? state.endedTasks : [],
+    endedTasks: state.endedTasks.filter((taskId) => !reportedTasks.includes(taskId)),
     turn: {
       id: turnId,
       cause: reported === null ? "user_input" : "task_end",
@@ -873,7 +881,8 @@ const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Dat
   });
   const note = endNoteOf(calls);
   if (note !== null) draft.effect({ kind: "note_end", runtimeTaskId: event.runtimeTaskId, note });
-  // Bounded: a turn that reports task ends reports all of them, so only ends no turn has come for yet pile up.
+  // Bounded: only a turn that names no batch reads these, and it reports all of them; a named batch is resolved
+  // from committed task rows, so an end dropped here still reaches the turn that names it.
   const endedTasks = [...draft.draft.endedTasks, task.id].slice(-MAX_RUNNING_TASKS);
   draft.advance({ ...draft.draft, endedTasks });
   return draft.accepted();

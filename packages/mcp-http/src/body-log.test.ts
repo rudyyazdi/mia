@@ -9,12 +9,15 @@ const call = (id: number | string, toolUseId?: string) => ({
 });
 
 describe("toolCallsIn", () => {
-  it("finds each tool call with a tool-use id, in a single message or a batch", () => {
+  it("keeps calls without runtime metadata alongside correlated calls", () => {
     expect([...toolCallsIn(call(1, "toolu_a")).entries()]).toEqual([
       [1, { toolUseId: "toolu_a", body: call(1, "toolu_a") }],
     ]);
     const batch = [call("x", "toolu_b"), call(2), { jsonrpc: "2.0", id: 3, method: "tools/list" }];
-    expect([...toolCallsIn(batch).keys()]).toEqual(["x"]);
+    expect([...toolCallsIn(batch).entries()]).toEqual([
+      ["x", { toolUseId: "toolu_b", body: call("x", "toolu_b") }],
+      [2, { toolUseId: null, body: call(2) }],
+    ]);
     expect(toolCallsIn(undefined).size).toBe(0);
   });
 });

@@ -114,6 +114,11 @@ class CodexSession {
   #threadId: string | null = null;
   /** starting: before the thread is ready; idle: between turns; turn: a manager agent's turn runs. */
   #phase: "starting" | "idle" | "turn" = "starting";
+  /**
+   * The worker ends the latest turn/start reports, fixed when it is sent: Codex begins no manager turn of its own,
+   * so each manager turn's init names exactly its batch, and an end queued after it waits for a later turn.
+   */
+  #reportedRuntimeTaskIds: readonly string[] = [];
   #stopped = false;
   #closed = false;
   #inputEnded = false;
@@ -339,6 +344,7 @@ class CodexSession {
       return;
     }
     this.#phase = "turn";
+    this.#reportedRuntimeTaskIds = next.kind === "ends" ? next.ends.map((end) => end.threadId) : [];
     const params = match(next)
       .with({ kind: "message" }, ({ text, runtimeMessageId }) => ({
         input: [{ type: "text", text, text_elements: [] }],
@@ -434,7 +440,14 @@ class CodexSession {
         });
     }
     for (const event of this.#translator.translate(notification, now)) {
-      await onEvent(event);
+      await onEvent(
+        event.type === "runtime_init"
+          ? {
+              ...event,
+              init: { ...event.init, reportedRuntimeTaskIds: this.#reportedRuntimeTaskIds },
+            }
+          : event,
+      );
       await this.#react(event);
     }
   }

@@ -1,5 +1,5 @@
 import { match } from "ts-pattern";
-import type { RuntimeFileRead } from "@mia/agent-adapter";
+import type { RuntimeFileRead, RuntimeKind } from "@mia/agent-adapter";
 import { bodyLogLinesFor, type BodyDirection } from "@mia/mcp-http";
 import { redactValue } from "@mia/protocol";
 import type { McpContent, McpEventType } from "@mia/records";
@@ -47,6 +47,20 @@ const DIRECTIONS: readonly BodyDirection[] = ["request", "response"];
 /** Both bodies of a call, unrecorded for `reason`. */
 export const unrecordedBodies = (reason: string): McpBody[] =>
   DIRECTIONS.map((direction) => ({ direction, status: "unrecorded", reason }));
+
+/**
+ * Why a runtime's calls record no bodies, without reading the log, or null when its calls carry a tool-use id. Codex
+ * sends none, so its exchanges stay in the body log unattributed rather than guessed from timing or arguments.
+ */
+export const uncorrelatedBodiesFor = (runtime: RuntimeKind): McpBody[] | null =>
+  match(runtime)
+    .with("claude-code", () => null)
+    .with("codex", () =>
+      unrecordedBodies(
+        "Codex does not supply a correlatable tool-use id; MCP exchanges remain in the body log without call attribution",
+      ),
+    )
+    .exhaustive();
 
 /** What a call with tool-use id `toolUseId` records from its server's body log, read as `read` at `readAt`. */
 export const mcpBodiesFrom = (

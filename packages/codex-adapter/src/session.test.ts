@@ -85,6 +85,20 @@ const open = async (
 };
 
 describe("a Codex session", () => {
+  it("reports the batch selected for each turn even when another worker ends before that turn starts", async () => {
+    const { handle, events } = await open({
+      worker: { summary: "first result" },
+      secondWorker: true,
+    });
+    handle.send("read twice", "message-1");
+    handle.close();
+    expect((await handle.result).status).toBe("ended");
+    expect(
+      events.flatMap((event) =>
+        event.type === "runtime_init" ? [event.init.reportedRuntimeTaskIds] : [],
+      ),
+    ).toEqual([[], ["worker-1"], ["worker-2"]]);
+  });
   it("ends as failed when Codex refuses a turn, rather than losing the message", async () => {
     const { handle } = await open({ turnStart: "reject" });
     expect(handle.send("hello", "message-1")).toBe(true);

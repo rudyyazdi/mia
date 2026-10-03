@@ -225,7 +225,10 @@ describe("messages and turns", () => {
     expect(replied.next.endedTasks).toEqual(ended.endedTasks);
     const finished = accepted(replied.next, turnEnded).next;
     expect(finished.turn).toBeNull();
-    const reported = accepted(finished, { ...turnBegan, reportedTaskIds: ended.endedTasks });
+    const reported = accepted(
+      after(finished, { ...turnBegan, reportedTaskIds: ended.endedTasks }),
+      { kind: "reply_text", ...drawn, text: "Result" },
+    );
     expect(recordLabels(reported.records)).toContain("turn_reports_tasks");
     expect(reported.next.endedTasks).toEqual([]);
   });
@@ -235,11 +238,8 @@ describe("messages and turns", () => {
     const taskId = ended.endedTasks[0];
     if (taskId === undefined) throw new Error("missing ended task");
     const opened = accepted(
-      { ...ended, endedTasks: ["later-task"] },
-      {
-        ...turnBegan,
-        reportedTaskIds: [taskId],
-      },
+      after({ ...ended, endedTasks: ["later-task"] }, { ...turnBegan, reportedTaskIds: [taskId] }),
+      { kind: "reply_text", ...drawn, text: "Result" },
     );
     expect(opened.next.turn).toMatchObject({ cause: "task_end", causedByTaskId: taskId });
     expect(opened.next.endedTasks).toEqual(["later-task"]);

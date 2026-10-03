@@ -114,8 +114,11 @@ class CodexSession {
   #threadId: string | null = null;
   /** starting: before the thread is ready; idle: between turns; turn: a manager agent's turn runs. */
   #phase: "starting" | "idle" | "turn" = "starting";
-  /** The bounded result batch handed to the current turn, fixed before Codex starts processing it. */
-  #reportedRuntimeTaskIds: readonly string[] | undefined;
+  /**
+   * The worker ends the latest turn/start reports, fixed when it is sent: Codex begins no manager turn of its own,
+   * so each manager turn's init names exactly its batch, and an end queued after it waits for a later turn.
+   */
+  #reportedRuntimeTaskIds: readonly string[] = [];
   #stopped = false;
   #closed = false;
   #inputEnded = false;
@@ -438,7 +441,7 @@ class CodexSession {
     }
     for (const event of this.#translator.translate(notification, now)) {
       await onEvent(
-        event.type === "runtime_init" && this.#reportedRuntimeTaskIds !== undefined
+        event.type === "runtime_init"
           ? {
               ...event,
               init: { ...event.init, reportedRuntimeTaskIds: this.#reportedRuntimeTaskIds },

@@ -48,7 +48,10 @@ const DIRECTIONS: readonly BodyDirection[] = ["request", "response"];
 export const unrecordedBodies = (reason: string): McpBody[] =>
   DIRECTIONS.map((direction) => ({ direction, status: "unrecorded", reason }));
 
-/** Codex omits tool-use metadata; retain transport exchanges without guessing a runtime call from their contents. */
+/**
+ * Why a runtime's calls record no bodies, without reading the log, or null when its calls carry a tool-use id. Codex
+ * sends none, so its exchanges stay in the body log unattributed rather than guessed from timing or arguments.
+ */
 export const uncorrelatedBodiesFor = (runtime: RuntimeKind): McpBody[] | null =>
   match(runtime)
     .with("claude-code", () => null)
@@ -59,13 +62,12 @@ export const uncorrelatedBodiesFor = (runtime: RuntimeKind): McpBody[] | null =>
     )
     .exhaustive();
 
-/** What a runtime call records from its server's body log, without guessing unsupported runtime correlation. */
+/** What a call with tool-use id `toolUseId` records from its server's body log, read as `read` at `readAt`. */
 export const mcpBodiesFrom = (
   read: RuntimeFileRead,
   toolUseId: string,
-  context: { readAt: BodyReadPoint; runtime: RuntimeKind },
+  readAt: BodyReadPoint,
 ): McpBody[] =>
-  uncorrelatedBodiesFor(context.runtime) ??
   match(read)
     .with({ status: "absent" }, () => unrecordedBodies("the body log does not exist"))
     .with({ status: "unreadable" }, ({ reason }) =>
@@ -83,7 +85,7 @@ export const mcpBodiesFrom = (
       ).map((direction): McpBody => ({
         direction,
         status: "unrecorded",
-        reason: missingReason(direction, context.readAt),
+        reason: missingReason(direction, readAt),
       }));
       return [...recorded, ...missing];
     })

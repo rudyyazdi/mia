@@ -8,40 +8,13 @@ const logOf = (...lines: unknown[]) => ({
 });
 
 describe("mcpBodiesFrom", () => {
-  it("does not attribute uncorrelated Codex exchanges to a call with identical arguments", () => {
-    const read = logOf(
-      {
-        tool_use_id: null,
-        exchange_id: "exchange-1",
-        direction: "request",
-        body: { id: 1, params: { arguments: {} } },
-      },
-      {
-        tool_use_id: null,
-        exchange_id: "exchange-1",
-        direction: "response",
-        body: { id: 1, result: "other call" },
-      },
-    );
-    expect(
-      mcpBodiesFrom(read, "exec-current", { readAt: "tool_result", runtime: "codex" }),
-    ).toEqual(
-      ["request", "response"].map((direction) => ({
-        direction,
-        status: "unrecorded",
-        reason: expect.stringContaining("without call attribution"),
-      })),
-    );
-  });
   it("records a call's lines in log order, redacted, and ignores other calls' lines", () => {
     const read = logOf(
       { tool_use_id: "toolu_a", direction: "request", body: { params: { api_key: "k" } } },
       { tool_use_id: "toolu_b", direction: "request", body: 2 },
       { tool_use_id: "toolu_a", direction: "response", body: { result: "sk-ant-abcdefghijk" } },
     );
-    expect(
-      mcpBodiesFrom(read, "toolu_a", { readAt: "tool_result", runtime: "claude-code" }),
-    ).toEqual([
+    expect(mcpBodiesFrom(read, "toolu_a", "tool_result")).toEqual([
       { direction: "request", status: "recorded", body: { params: { api_key: REDACTED } } },
       { direction: "response", status: "recorded", body: { result: REDACTED } },
     ]);
@@ -52,9 +25,7 @@ describe("mcpBodiesFrom", () => {
       { tool_use_id: "toolu_a", direction: "request", body: 1 },
       { tool_use_id: "toolu_a", direction: "request", body: 2 },
     );
-    expect(
-      mcpBodiesFrom(read, "toolu_a", { readAt: "tool_result", runtime: "claude-code" }),
-    ).toEqual([
+    expect(mcpBodiesFrom(read, "toolu_a", "tool_result")).toEqual([
       { direction: "request", status: "recorded", body: 1 },
       { direction: "request", status: "recorded", body: 2 },
       {
@@ -67,9 +38,7 @@ describe("mcpBodiesFrom", () => {
 
   it("says at session end only that a missing line was not written yet, as the server may still be handling it", () => {
     const read = logOf({ tool_use_id: "toolu_a", direction: "request", body: 1 });
-    expect(
-      mcpBodiesFrom(read, "toolu_a", { readAt: "session_end", runtime: "claude-code" }),
-    ).toEqual([
+    expect(mcpBodiesFrom(read, "toolu_a", "session_end")).toEqual([
       { direction: "request", status: "recorded", body: 1 },
       {
         direction: "response",
@@ -87,10 +56,7 @@ describe("mcpBodiesFrom", () => {
     },
     { read: logOf(), reason: undefined },
   ])("records why both bodies are missing when the log is $read.status", ({ read, reason }) => {
-    const bodies = mcpBodiesFrom(read, "toolu_a", {
-      readAt: "tool_result",
-      runtime: "claude-code",
-    });
+    const bodies = mcpBodiesFrom(read, "toolu_a", "tool_result");
     expect(bodies.map((body) => body.direction)).toEqual(["request", "response"]);
     for (const body of bodies)
       expect(body).toEqual({

@@ -413,17 +413,13 @@ const turnBegan = (state: ConversationState, event: TurnBeganEvent, now: Date): 
       reportedTaskIds: event.reportedTaskIds ?? null,
     },
   });
-  // A message turn waits for input_taken to preserve its message link. Its explicit empty batch also prevents
-  // activity from claiming pending results when the runtime omits that input notification.
-  if (event.reportedTaskIds !== undefined && event.reportedTaskIds.length > 0)
-    openTurn(draft, { kind: "activity" });
   return draft.accepted();
 };
 
 /**
  * Record the turn the runtime began, now that its cause shows: a message the runtime replayed makes it the user's;
- * an adapter-supplied batch names exactly the ends being reported. Runtimes that schedule their own turns fall
- * back to the unreported ends at first activity. No turn opening: nothing to do.
+ * anything else makes it the report of the batch the runtime named (none, for a message turn whose replay never
+ * came), or, from a runtime that names none, of every task end not reported yet. No turn opening: nothing to do.
  */
 const openTurn = (
   draft: ConversationDraft,
@@ -885,7 +881,8 @@ const workerEnded = (state: ConversationState, event: WorkerEndedEvent, now: Dat
   });
   const note = endNoteOf(calls);
   if (note !== null) draft.effect({ kind: "note_end", runtimeTaskId: event.runtimeTaskId, note });
-  // Legacy inference is bounded; adapters with explicit batches resolve older ends from committed task rows.
+  // Bounded: only a turn that names no batch reads these, and it reports all of them; a named batch is resolved
+  // from committed task rows, so an end dropped here still reaches the turn that names it.
   const endedTasks = [...draft.draft.endedTasks, task.id].slice(-MAX_RUNNING_TASKS);
   draft.advance({ ...draft.draft, endedTasks });
   return draft.accepted();

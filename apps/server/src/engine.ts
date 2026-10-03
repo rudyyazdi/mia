@@ -447,10 +447,7 @@ export class Engine implements CommandEngine {
     const signal = AbortSignal.any([this.stopping.signal, this.deps.evidenceReadDeadline()]);
     const read = await this.deps.readEvidence(path, { signal, maxBytes: MAX_BODY_LOG_BYTES });
     try {
-      return mcpBodiesFrom(read, runtimeCallId, {
-        readAt,
-        runtime: this.deps.profile.runtime.kind,
-      });
+      return mcpBodiesFrom(read, runtimeCallId, readAt);
     } catch (error) {
       return unrecordedBodies(`the body log could not be parsed: ${errorMessage(error)}`);
     }

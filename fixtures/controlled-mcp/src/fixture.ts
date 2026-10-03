@@ -125,22 +125,41 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
     server.registerTool(
       "change",
       {
-        description: "Increment the fixture counter by delta. Consequential.",
-        inputSchema: { delta: z.number().int() },
+        description:
+          "Change the fixture counter and return it. Consequential. Pass exactly one of: value, to set the counter to that number in one step, or delta, to add to it. When asked to set the counter to a number, pass value directly; never read it and then pass a delta, since another task may change the counter between those two calls.",
+        // Two optional fields checked below, not a union: an MCP tool's input schema is one object.
+        inputSchema: { delta: z.number().int().optional(), value: z.number().int().optional() },
       },
-      async ({ delta }) => {
+      async (args) => {
         const id = callId();
-        ledger.append({ kind: "entered", tool: "change", callId: id, args: { delta } });
-        const value = ledger.increment(delta);
+        ledger.append({ kind: "entered", tool: "change", callId: id, args });
+        let counter: number;
+        if (args.delta !== undefined && args.value === undefined)
+          counter = ledger.increment(args.delta);
+        else if (args.value !== undefined && args.delta === undefined)
+          counter = ledger.set(args.value);
+        else {
+          ledger.append({
+            kind: "rejected",
+            tool: "change",
+            callId: id,
+            args,
+            detail: "pass exactly one of delta and value",
+          });
+          return {
+            isError: true,
+            content: [{ type: "text", text: "rejected: pass exactly one of delta and value" }],
+          };
+        }
         ledger.append({
           kind: "committed",
           tool: "change",
           callId: id,
-          args: { delta },
-          detail: `counter=${value}`,
+          args,
+          detail: `counter=${counter}`,
         });
-        ledger.append({ kind: "returned", tool: "change", callId: id, args: { delta } });
-        return { content: [{ type: "text", text: JSON.stringify({ counter: value }) }] };
+        ledger.append({ kind: "returned", tool: "change", callId: id, args });
+        return { content: [{ type: "text", text: JSON.stringify({ counter }) }] };
       },
     );
 

@@ -50,7 +50,9 @@ Copy `examples/config/production-opus.example.json` (Claude Code) or `examples/c
   worker agent's `description` and `promptFile`. The manager agent can only delegate to and stop worker agents; worker
   agents make every tool call, each decided by Mia before it runs (see the
   [capability record](https://github.com/rudyyazdi/mia/pull/202#issuecomment-5922737456)).
-- `runtime.exclusiveTools`: tools only one worker agent may use at a time.
+- `runtime.exclusiveTools`: tools only one worker agent may use at a time. The lease covers one call, so it does not
+  make a read followed by a change atomic: another task may call between them. Give an absolute update a one-call form
+  (the fixture's `change` with `value`) instead.
 
 ## Runtime differences
 

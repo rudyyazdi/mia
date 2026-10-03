@@ -9,3 +9,4 @@ node_modules/
 exports/
 # local configuration (use examples/config/*.json as templates)
 config/*.local.json
+*.sqlite

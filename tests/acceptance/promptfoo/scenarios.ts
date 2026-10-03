@@ -21,6 +21,7 @@ import {
   TurnCauseSchema,
   type Decision,
   type ServerEvent,
+  type ServerEventOf,
   type TaskStatus,
 } from "@mia/protocol";
 
@@ -114,7 +115,15 @@ export const ScenarioEvidenceSchema = z.object({
   conversation_id: z.string(),
   tasks: z.array(z.object({ task_id: z.string(), status: TaskStatusSchema })),
   /** Each turn's reply, in the order the turns started. */
-  replies: z.array(z.object({ turn_id: z.string(), cause: TurnCauseSchema, text: z.string() })),
+  /** Each turn's reply, in the order the turns started, with the tasks whose end it reports. */
+  replies: z.array(
+    z.object({
+      turn_id: z.string(),
+      cause: TurnCauseSchema,
+      task_ids: z.array(z.string()),
+      text: z.string(),
+    }),
+  ),
   decisions: z.array(
     z.object({
       approval_id: z.string(),
@@ -173,19 +182,39 @@ const allTasksEnded = (events: readonly ServerEvent[]): boolean => {
   return events.every((event) => event.type !== "task_started" || ended.has(event.payload.task_id));
 };
 
+/** The tasks whose end a turn reports: one turn may report a batch; an event from before `task_ids` names only the first. */
+const reportedBy = (event: ServerEventOf<"turn_started">): string[] =>
+  event.payload.task_ids ?? (event.payload.task_id === undefined ? [] : [event.payload.task_id]);
+
+/** The tasks whose end a finished turn reported. */
+const reportedTasksOf = (events: readonly ServerEvent[]): Set<string> => {
+  const finished = new Set(
+    events.flatMap((event) => (event.type === "turn_finished" ? [event.payload.turn_id] : [])),
+  );
+  return new Set(
+    events.flatMap((event) =>
+      event.type === "turn_started" && finished.has(event.payload.turn_id) ? reportedBy(event) : [],
+    ),
+  );
+};
+
 /**
- * Whether the conversation went quiet after its first `since` events: a turn ended after them, every task started has
- * ended, and a turn that also ended began after the last task's end, so it was reported.
+ * Whether the conversation went quiet after its first `since` events: a turn started and ended after them and none is
+ * open, every task started has ended, and a finished turn reported each end.
  */
 export const quietAfter = (events: readonly ServerEvent[], since: number): boolean => {
   const recent = events.slice(since);
   const lastIndex = (test: (event: ServerEvent) => boolean) => recent.findLastIndex(test);
+  const reported = reportedTasksOf(events);
+  const lastStarted = lastIndex((event) => event.type === "turn_started");
   return (
-    lastIndex((event) => event.type === "turn_finished") >
-      lastIndex((event) => event.type === "turn_started") &&
-    lastIndex((event) => event.type === "turn_started") >
-      lastIndex((event) => endOf(event) !== null) &&
-    allTasksEnded(events)
+    lastStarted >= 0 &&
+    lastIndex((event) => event.type === "turn_finished") > lastStarted &&
+    allTasksEnded(events) &&
+    events.every((event) => {
+      const end = endOf(event);
+      return end === null || reported.has(end.taskId);
+    })
   );
 };
 
@@ -375,7 +404,7 @@ const repliesOf = (events: readonly ServerEvent[]): ScenarioEvidence["replies"] 
           : [],
       )
       .join("");
-    return [{ turn_id: turnId, cause, text }];
+    return [{ turn_id: turnId, cause, task_ids: reportedBy(event), text }];
   });
 
 /** Each task started, with the status it finished in, or running. */

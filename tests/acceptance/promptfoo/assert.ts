@@ -180,12 +180,29 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
         problems.push(`change commits were ${committed}`);
       if (evidence.ledger_after.counter !== -1)
         problems.push(`counter ended at ${evidence.ledger_after.counter}, not -1`);
-      // The false claim seen in a rejected task's report while a sibling's deduction had committed.
+      const rejected = evidence.decisions.find((decision) => decision.decision === "reject");
+      const reportsOf = (taskIds: ReadonlySet<string>) =>
+        evidence.replies.filter(
+          (reply) =>
+            reply.cause === "task_end" && reply.task_ids.some((taskId) => taskIds.has(taskId)),
+        );
+      if (rejected === undefined || reportsOf(new Set([rejected.task_id])).length === 0)
+        problems.push("no reply reported the rejected deduction's task");
+      // A denied or failed call says nothing about the shared counter, so its report may not claim the counter's state.
+      const unsuccessful = new Set(
+        evidence.events.flatMap((event) =>
+          event.type === "tool_call" &&
+          isRecord(event.payload) &&
+          (event.payload.status === "denied" || event.payload.status === "failed") &&
+          typeof event.payload.task_id === "string"
+            ? [event.payload.task_id]
+            : [],
+        ),
+      );
       const unchanged = /counter (was|is|remains|stayed) (not changed|unchanged)/i;
-      const claims = evidence.replies.filter((reply) => unchanged.test(reply.text));
-      if (claims.length > 0)
-        problems.push(`a reply claimed the counter unchanged: ${claims[0]?.text.slice(0, 200)}`);
-      requireReported();
+      const claim = reportsOf(unsuccessful).find((reply) => unchanged.test(reply.text));
+      if (claim !== undefined)
+        problems.push(`a report of a call that did not run claimed: ${claim.text.slice(0, 200)}`);
     })
     .exhaustive();
   return {

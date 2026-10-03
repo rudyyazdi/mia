@@ -459,7 +459,7 @@ const openTurn = (
         conversation_id: state.id,
         turn_id: turnId,
         cause: reported === null ? "user_input" : "task_end",
-        ...(reported === null ? {} : { task_id: reported }),
+        ...(reported === null ? {} : { task_id: reported, task_ids: [...reportedTasks] }),
       },
     },
     {

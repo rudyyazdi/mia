@@ -19,9 +19,14 @@ export type QueuedTurn =
 /** How many ends one report lists; ends past it are only counted (each summary is bounded by the translator). */
 export const MAX_LISTED_ENDS = 64;
 
-/** The text of a turn that reports worker agents' ends, one line each. */
+/**
+ * The text of a turn that reports worker agents' ends: a line naming the batch, then one line per listed end, then a
+ * count of ends past MAX_LISTED_ENDS. Codex may have shown the manager agent any worker agent's final message already;
+ * the batch line names exactly whose outcomes this reply may report (the rule is in DELEGATION_INSTRUCTIONS).
+ */
 export const reportOf = (ends: readonly EndReport[], unlisted: number): string =>
   [
+    `[Mia] Report the outcomes of exactly these worker agents in this reply: ${ends.map(({ path }) => path).join(", ")}.`,
     ...ends.map(
       ({ path, threadId, end, summary, note }) =>
         `[Mia] Worker agent ${path} (id ${threadId}) ended: ${end}.${note === null ? "" : ` ${note}`}${summary === null ? "" : ` Its final message: ${summary}`}`,
@@ -29,17 +34,18 @@ export const reportOf = (ends: readonly EndReport[], unlisted: number): string =
     ...(unlisted === 0
       ? []
       : [
-          `[Mia] ${unlisted} more worker agents ended; their results are in Mia's records but are not included in this turn's attributed batch.`,
+          `[Mia] ${unlisted} more worker ${unlisted === 1 ? "agent" : "agents"} ended; Mia will not list ${unlisted === 1 ? "that end" : "those ends"}, so report only this count, not their outcomes.`,
         ]),
   ].join("\n");
 
 /**
  * The manager agent's next turns. Codex takes one turn at a time and starts none of its own when a worker agent
- * ends, so ends wait here for a turn that reports them. The next turn reports every end waiting, before any message
- * waiting. The session reports the selected batch's task ids when its turn begins; ends arriving after take()
- * belong to a later turn. Messages are bounded by the caller's own message bound; ends are listed up to
- * MAX_LISTED_ENDS and counted past it. Count-only overflow has no per-task attribution: retaining every id would
- * make this queue unbounded. The prompt explicitly distinguishes these omitted results from the selected batch.
+ * ends, though it may show an active turn that worker agent's final message (see reportOf); so ends wait here for a
+ * turn that reports them. The next turn reports every end waiting, before any message waiting. The session reports
+ * the selected batch's task ids when its turn begins; ends arriving after take() belong to a later turn. Messages
+ * are bounded by the caller's own message bound; ends are listed up to MAX_LISTED_ENDS and counted past it.
+ * Count-only overflow has no per-task attribution: retaining every id would make this queue unbounded, so the manager
+ * agent reports only their count.
  */
 export class TurnQueue {
   readonly #messages: { text: string; runtimeMessageId: string }[] = [];

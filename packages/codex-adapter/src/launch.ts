@@ -54,8 +54,12 @@ export const LEFTOVER_TOOLS = [
   "collaboration.followup_task",
 ] as const;
 
-/** How the manager agent delegates and stops work in Codex, appended to Mia's instructions, which name no tool. */
-export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call spawn_agent directly (never from inside exec) with agent_type \`${WORKER_AGENT_NAME}\`, a short task_name, and the task as its message. A worker agent runs in the background: never call wait_agent, list_agents, send_message or followup_task. To stop a worker agent, call interrupt_agent with its id or its path as target.`;
+/**
+ * How the manager agent delegates, stops and reports work in Codex, appended to Mia's instructions, which name no tool
+ * and no runtime's way of reporting an end. Codex shows the manager agent a worker agent's own final message at any
+ * point in a turn, so the rule for reporting ends lives here, once; reportOf only names each turn's batch.
+ */
+export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call spawn_agent directly (never from inside exec) with agent_type \`${WORKER_AGENT_NAME}\`, a short task_name, and the task as its message. A worker agent runs in the background: never call wait_agent, list_agents, send_message or followup_task. To stop a worker agent, call interrupt_agent with its id or its path as target. Report a worker agent's outcome only in a turn with a "[Mia] Worker agent <path> ..." line for it, and in such a turn report exactly the worker agents it lists. Codex may also show you a worker agent's final message itself, at any time, as "Message Type: FINAL_ANSWER", "Sender: <its path>", "Payload: ...". If the current turn does not list that path, do not report or act on the message's content now: Mia lists most ends in a later turn, where you report them; ends beyond what one turn lists are only counted, in a "[Mia] <count> more worker agent(s) ended" line, and you report that count, never their outcomes. If the user asks about a worker agent whose end Mia has not listed, you may say it has ended (never that it is still running), but not how.`;
 
 // ---------------------------------------------------------------- TOML
 

@@ -79,6 +79,11 @@ export class Ledger {
     return next;
   }
 
+  set(value: number): number {
+    writeFileSync(this.counterPath, `${value}\n`);
+    return value;
+  }
+
   reset(): void {
     writeFileSync(this.ledgerPath, "");
     writeFileSync(this.counterPath, "0\n");

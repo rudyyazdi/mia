@@ -225,6 +225,56 @@ describe("controlled fixture", () => {
     await mcpClient.close();
   });
 
+  it("sets the counter absolutely with change's value: two sets to zero from 12 each return and leave zero", async () => {
+    await harness.reset();
+    const clients = await Promise.all([client(), client()]);
+    try {
+      await clients[0].callTool({ name: "change", arguments: { delta: 12 } });
+      const results = await Promise.all(
+        clients.map((mcpClient) => mcpClient.callTool({ name: "change", arguments: { value: 0 } })),
+      );
+      expect(results.map(firstText)).toEqual(['{"counter":0}', '{"counter":0}']);
+    } finally {
+      await Promise.all(clients.map((mcpClient) => mcpClient.close()));
+    }
+    const state = await harness.state();
+    expect(state.counter).toBe(0);
+    expect(
+      state.ledger
+        .filter((entry) => entry.kind === "committed")
+        .map(({ args, detail }) => ({ args, detail })),
+    ).toEqual([
+      { args: { delta: 12 }, detail: "counter=12" },
+      { args: { value: 0 }, detail: "counter=0" },
+      { args: { value: 0 }, detail: "counter=0" },
+    ]);
+  });
+
+  it("rejects a change that passes both delta and value, or neither, leaving the counter", async () => {
+    await harness.reset();
+    const mcpClient = await client();
+    try {
+      await mcpClient.callTool({ name: "change", arguments: { delta: 3 } });
+      for (const invalid of [{ delta: 1, value: 0 }, {}]) {
+        const result = await mcpClient.callTool({ name: "change", arguments: invalid });
+        expect(result.isError).toBe(true);
+      }
+    } finally {
+      await mcpClient.close();
+    }
+    const state = await harness.state();
+    expect(state.counter).toBe(3);
+    expect(
+      state.ledger
+        .filter((entry) => entry.kind === "rejected" || entry.kind === "committed")
+        .map(({ kind, args }) => ({ kind, args })),
+    ).toEqual([
+      { kind: "committed", args: { delta: 3 } },
+      { kind: "rejected", args: { delta: 1, value: 0 } },
+      { kind: "rejected", args: {} },
+    ]);
+  });
+
   it("logs a tool call's request and response bodies under its tool-use id", async () => {
     await harness.reset();
     const mcpClient = await client();

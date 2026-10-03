@@ -39,6 +39,7 @@ export type FixtureState = z.infer<typeof FixtureStateSchema>;
 
 const EnteredSchema = z.object({ call_id: z.string(), mode: SlowModeSchema });
 const ReleaseBodySchema = z.object({ call_id: z.string().optional() });
+const CounterBodySchema = z.object({ value: z.number().int() });
 
 export interface FixtureOptions {
   dir: string;
@@ -125,22 +126,41 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
     server.registerTool(
       "change",
       {
-        description: "Increment the fixture counter by delta. Consequential.",
-        inputSchema: { delta: z.number().int() },
+        description:
+          "Change the fixture counter and return it. Consequential. Pass exactly one of: value, to set the counter to that number in one step, or delta, to add to it. When asked to set the counter to a number, pass value directly; never read it and then pass a delta, since another task may change the counter between those two calls.",
+        // Two optional fields checked below, not a union: an MCP tool's input schema is one object.
+        inputSchema: { delta: z.number().int().optional(), value: z.number().int().optional() },
       },
-      async ({ delta }) => {
+      async (args) => {
         const id = callId();
-        ledger.append({ kind: "entered", tool: "change", callId: id, args: { delta } });
-        const value = ledger.increment(delta);
+        ledger.append({ kind: "entered", tool: "change", callId: id, args });
+        let counter: number;
+        if (args.delta !== undefined && args.value === undefined)
+          counter = ledger.increment(args.delta);
+        else if (args.value !== undefined && args.delta === undefined)
+          counter = ledger.set(args.value);
+        else {
+          ledger.append({
+            kind: "rejected",
+            tool: "change",
+            callId: id,
+            args,
+            detail: "pass exactly one of delta and value",
+          });
+          return {
+            isError: true,
+            content: [{ type: "text", text: "rejected: pass exactly one of delta and value" }],
+          };
+        }
         ledger.append({
           kind: "committed",
           tool: "change",
           callId: id,
-          args: { delta },
-          detail: `counter=${value}`,
+          args,
+          detail: `counter=${counter}`,
         });
-        ledger.append({ kind: "returned", tool: "change", callId: id, args: { delta } });
-        return { content: [{ type: "text", text: JSON.stringify({ counter: value }) }] };
+        ledger.append({ kind: "returned", tool: "change", callId: id, args });
+        return { content: [{ type: "text", text: JSON.stringify({ counter }) }] };
       },
     );
 
@@ -300,6 +320,11 @@ export const startFixture = async (options: FixtureOptions): Promise<FixtureHand
       ledger.reset();
       return sendJson(res, 200, { ok: true });
     }
+    if (req.method === "POST" && url.pathname === "/counter") {
+      // Scenario setup, not an agent's action: it writes no ledger entry, so commits still count only tool calls.
+      const body = CounterBodySchema.parse(await readJsonBody(req));
+      return sendJson(res, 200, { counter: ledger.set(body.value) });
+    }
     if (req.method === "POST" && url.pathname === "/wait-entered") {
       // Long-poll until a slow call has entered (or one is already pending and unreleased).
       const existing = [...pending.values()].find((call) => !call.released && !call.cancelled);
@@ -428,6 +453,16 @@ export class FixtureHarness {
       // The pause only rejects when the signal aborts; the next pass then reads and returns the state.
       await sleep(STATE_POLL_MS, undefined, { signal, ref: false }).catch(() => undefined);
     }
+  }
+
+  /** Set the counter before a scenario, without a ledger entry. */
+  async seedCounter(value: number): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/counter`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (!res.ok) throw new Error(`seed counter failed: ${res.status} ${await res.text()}`);
   }
 
   async release(callId?: string): Promise<void> {

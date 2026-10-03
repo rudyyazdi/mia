@@ -239,8 +239,10 @@ const eventPayloads = {
     conversation_id: IdSchema,
     turn_id: IdSchema,
     cause: TurnCauseSchema,
-    /** Set when the turn reports this task's end. */
+    /** Set when the turn reports this task's end: the first of `task_ids`. */
     task_id: IdSchema.optional(),
+    /** Set when the turn reports task ends: every task whose end it reports, as one turn may report a batch. */
+    task_ids: z.array(IdSchema).optional(),
   }),
   /** Text of the manager agent's reply in a turn. */
   reply_delta: z.object({

@@ -27,5 +27,7 @@ tests:
     vars: { scenario: allow-policy-no-prompt }
   - description: artifact-export
     vars: { scenario: artifact-export }
+  - description: set-and-deduct
+    vars: { scenario: set-and-deduct }
 evaluateOptions:
   maxConcurrency: 1

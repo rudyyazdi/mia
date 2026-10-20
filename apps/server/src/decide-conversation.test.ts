@@ -294,12 +294,24 @@ describe("messages and turns", () => {
 
   it("makes a turn that begins without a message the report of every task end not reported yet", () => {
     const ended = after(running("a1", "a2"), turnEnded, workerEnded("a1"), workerEnded("a2"));
-    const reporting = after(ended, turnBegan, { kind: "reply_text", ...drawn, text: "done" });
-    expect(reporting.turn).toMatchObject({
+    const reporting = accepted(after(ended, turnBegan), {
+      kind: "reply_text",
+      ...drawn,
+      text: "done",
+    });
+    expect(reporting.next.turn).toMatchObject({
       cause: "task_end",
       causedByTaskId: ended.endedTasks[0],
     });
-    expect(reporting.endedTasks).toEqual([]);
+    expect(reporting.next.endedTasks).toEqual([]);
+    // A client learns the whole batch, not only the first task, so it can tell when every end was reported.
+    const turnStarted = reporting.effects.find(
+      (effect) => effect.kind === "deliver_event" && effect.event.type === "turn_started",
+    );
+    expect(turnStarted).toMatchObject({
+      event: { payload: { task_id: ended.endedTasks[0], task_ids: ended.endedTasks } },
+    });
+    expect(ended.endedTasks).toHaveLength(2);
   });
 });
 

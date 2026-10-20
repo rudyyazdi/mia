@@ -61,6 +61,18 @@ export const LEFTOVER_TOOLS = [
  */
 export const DELEGATION_INSTRUCTIONS = `To start a worker agent, call spawn_agent directly (never from inside exec) with agent_type \`${WORKER_AGENT_NAME}\`, a short task_name, and the task as its message. A worker agent runs in the background: never call wait_agent, list_agents, send_message or followup_task. To stop a worker agent, call interrupt_agent with its id or its path as target. Report a worker agent's outcome only in a turn with a "[Mia] Worker agent <path> ..." line for it, and in such a turn report exactly the worker agents it lists. Codex may also show you a worker agent's final message itself, at any time, as "Message Type: FINAL_ANSWER", "Sender: <its path>", "Payload: ...". If the current turn does not list that path, do not report or act on the message's content now: Mia lists most ends in a later turn, where you report them; ends beyond what one turn lists are only counted, in a "[Mia] <count> more worker agent(s) ended" line, and you report that count, never their outcomes. If the user asks about a worker agent whose end Mia has not listed, you may say it has ended (never that it is still running), but not how.`;
 
+/**
+ * Appended to a worker agent's instructions in Codex only. A code-mode worker agent calls its tools as functions inside
+ * `exec`: one guessed a tool name (`mcp__fixture__read_counter`), got a TypeError, and reported the tool unavailable,
+ * and one guessed an argument name (`counter` for `value`), which the server dropped. Code mode lists each tool in
+ * `ALL_TOOLS` with its declaration (Codex 0.160.0). Claude Code offers each tool by its exact name and schema, so its
+ * worker agents need none of this.
+ */
+const workerToolInstructions = (tools: readonly string[]): string =>
+  tools.length === 0
+    ? "You have no tools. Never call one from inside exec or invent a name for one."
+    : `Your tools are exactly: ${tools.join(", ")}. Mia's policy may still refuse a call to any of them. Inside exec, call each as tools.<name>(args) by exactly that name; never invent, shorten or rename one. Before calling one, read its ALL_TOOLS entry, whose description ends with its exec tool declaration, and pass exactly the argument names that declaration gives; never guess an argument name. A JavaScript TypeError from calling a function (such as "is not a function" or "is not defined") means the name you used was wrong, not that the tool is unavailable: use the exact name from this list.`;
+
 // ---------------------------------------------------------------- TOML
 
 type TomlValue = string | number | boolean | readonly string[] | Readonly<Record<string, string>>;
@@ -238,7 +250,7 @@ export const prepareCodexSession = (input: CodexSessionInput): CodexSessionPlan 
       entries: {
         name: WORKER_AGENT_NAME,
         description: config.workerAgent.description,
-        developer_instructions: input.workerPrompt,
+        developer_instructions: `${input.workerPrompt}\n\n${workerToolInstructions(tools)}`,
         model: config.model,
         model_reasoning_effort: config.effort,
       },

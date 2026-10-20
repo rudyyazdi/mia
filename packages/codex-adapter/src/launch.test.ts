@@ -17,7 +17,7 @@ const config: CodexConfig = {
     },
     "local-tool": { type: "stdio", command: "local", args: ["--x"] },
   },
-  toolPolicy: { mcp__fixture__read: "allow" },
+  toolPolicy: { mcp__fixture__read: "allow", mcp__fixture__change: "ask" },
   agentPromptFile: "/manager.md",
   workerAgent: { description: "does tool work", promptFile: "/worker.md" },
   exclusiveTools: [],
@@ -25,9 +25,9 @@ const config: CodexConfig = {
   env: {},
 };
 
-const plan = (workerPrompt = "Do the task.") =>
+const plan = (workerPrompt = "Do the task.", toolPolicy = config.toolPolicy) =>
   prepareCodexSession({
-    config,
+    config: { ...config, toolPolicy },
     codexHome: "/state/codex-home",
     runtimeDir: "/conversation/runtime",
     gateUrl: "http://127.0.0.1:2/gate/token",
@@ -69,8 +69,23 @@ describe("prepareCodexSession", () => {
   it("writes the worker agent's instructions as one TOML string, whatever characters they hold", () => {
     const prompt = 'Say "hi" \\ then\nstop.\u007f';
     expect(file("agents/mia-worker.toml", prompt)).toContain(
-      `developer_instructions = "Say \\"hi\\" \\\\ then\\nstop.\\u007F"\n`,
+      `developer_instructions = "Say \\"hi\\" \\\\ then\\nstop.\\u007F\\n\\n`,
     );
+  });
+
+  it("tells the worker agent the exact name of each tool in the policy", () => {
+    const worker = file("agents/mia-worker.toml");
+    expect(worker).toMatch(
+      /developer_instructions = "Do the task\.\\n\\nYour tools are exactly: mcp__fixture__read, mcp__fixture__change\. Mia's policy may still refuse/,
+    );
+  });
+
+  it("tells a worker agent with an empty policy that it has no tools, not an empty list", () => {
+    const worker =
+      plan("Do the task.", {}).setup.files.find((entry) => entry.path.endsWith("mia-worker.toml"))
+        ?.content ?? "";
+    expect(worker).toContain('developer_instructions = "Do the task.\\n\\nYou have no tools.');
+    expect(worker).not.toContain("exactly: .");
   });
 
   it("links the user's own login into Mia's Codex home", () => {

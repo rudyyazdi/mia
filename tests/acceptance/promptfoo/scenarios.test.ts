@@ -61,18 +61,41 @@ describe("live scenario names", () => {
     expect(quietAfter(delegated, 0)).toBe(false);
     const ended = [...delegated, at("task_finished", { task_id: "task_1" })];
     expect(quietAfter(ended, 0)).toBe(false);
-    const reporting = [...ended, at("turn_started", { turn_id: "turn_2" })];
+    // An event from before `task_ids` names the task it reports only as `task_id`.
+    const reporting = [...ended, at("turn_started", { turn_id: "turn_2", task_id: "task_1" })];
     expect(quietAfter(reporting, 0)).toBe(false);
     expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 0)).toBe(true);
     // An interrupted task ends with its interruption's outcome.
     const interrupted = [
       ...delegated,
       at("interruption_outcome", { task_id: "task_1" }),
-      at("turn_started", { turn_id: "turn_2" }),
+      at("turn_started", { turn_id: "turn_2", task_ids: ["task_1"] }),
       at("turn_finished", { turn_id: "turn_2" }),
     ];
     expect(quietAfter(interrupted, 0)).toBe(true);
     // A message sent after the conversation went quiet is not settled by the earlier turns.
     expect(quietAfter([...reporting, at("turn_finished", { turn_id: "turn_2" })], 5)).toBe(false);
+  });
+
+  it("is quiet only once a finished turn reported every ended task, alone or in a batch", () => {
+    const at = (type: string, payload: Record<string, unknown> = {}) =>
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- a minimal event stream for the decision
+      ({ type, sequence: null, payload }) as unknown as ServerEvent;
+    const bothEnded = [
+      at("turn_started", { turn_id: "turn_1" }),
+      at("task_started", { task_id: "task_1" }),
+      at("task_started", { task_id: "task_2" }),
+      at("turn_finished", { turn_id: "turn_1" }),
+      at("task_finished", { task_id: "task_1" }),
+      at("task_finished", { task_id: "task_2" }),
+    ];
+    const reported = (taskIds: string[]) => [
+      ...bothEnded,
+      at("turn_started", { turn_id: "turn_2", task_id: taskIds[0], task_ids: taskIds }),
+      at("turn_finished", { turn_id: "turn_2" }),
+    ];
+    expect(quietAfter(reported(["task_1", "task_2"]), 0)).toBe(true);
+    // The second task's own report turn has not started yet.
+    expect(quietAfter(reported(["task_1"]), 0)).toBe(false);
   });
 });

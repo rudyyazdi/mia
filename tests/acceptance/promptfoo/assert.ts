@@ -166,6 +166,44 @@ const assertScenario = (output: string, context: { vars: Record<string, unknown>
       )
         problems.push("artifact call did not complete");
     })
+    .with("set-and-deduct", () => {
+      // Seeded at 12: two sets to zero, then one approved and one rejected deduction, each exactly one change call.
+      const expected = [{ value: 0 }, { value: 0 }, { delta: -1 }, { delta: -1 }];
+      const asked = approvals.map((event) =>
+        isRecord(event.payload) ? event.payload.redacted_arguments : undefined,
+      );
+      if (JSON.stringify(asked) !== JSON.stringify(expected))
+        problems.push(`approvals asked for ${JSON.stringify(asked)}`);
+      const changes = commits.filter((commit) => commit.tool === "change");
+      const committed = JSON.stringify(changes.map((commit) => commit.args));
+      if (committed !== JSON.stringify(expected.slice(0, 3)))
+        problems.push(`change commits were ${committed}`);
+      if (evidence.ledger_after.counter !== -1)
+        problems.push(`counter ended at ${evidence.ledger_after.counter}, not -1`);
+      const rejected = evidence.decisions.find((decision) => decision.decision === "reject");
+      const reportsOf = (taskIds: ReadonlySet<string>) =>
+        evidence.replies.filter(
+          (reply) =>
+            reply.cause === "task_end" && reply.task_ids.some((taskId) => taskIds.has(taskId)),
+        );
+      if (rejected === undefined || reportsOf(new Set([rejected.task_id])).length === 0)
+        problems.push("no reply reported the rejected deduction's task");
+      // A denied or failed call says nothing about the shared counter, so its report may not claim the counter's state.
+      const unsuccessful = new Set(
+        evidence.events.flatMap((event) =>
+          event.type === "tool_call" &&
+          isRecord(event.payload) &&
+          (event.payload.status === "denied" || event.payload.status === "failed") &&
+          typeof event.payload.task_id === "string"
+            ? [event.payload.task_id]
+            : [],
+        ),
+      );
+      const unchanged = /counter (was|is|remains|stayed) (not changed|unchanged)/i;
+      const claim = reportsOf(unsuccessful).find((reply) => unchanged.test(reply.text));
+      if (claim !== undefined)
+        problems.push(`a report of a call that did not run claimed: ${claim.text.slice(0, 200)}`);
+    })
     .exhaustive();
   return {
     pass: problems.length === 0,
